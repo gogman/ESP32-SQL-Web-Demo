@@ -235,7 +235,7 @@ class Browser:
         The waiting happens inside the page: a promise that tests the condition every
         50 ms and resolves as soon as it holds, or with false when time runs out.
         """
-        return self.run("""
+        script = """
             new Promise(function (resolve) {
               var started = Date.now();
               (function test() {
@@ -245,7 +245,19 @@ class Browser:
                 else if (Date.now() - started > %d) resolve(false);
                 else setTimeout(test, 50);
               })();
-            })""" % (condition, TIMEOUT * 1000))
+            })""" % (condition, TIMEOUT * 1000)
+
+        # If the browser moves to another document while the promise is
+        # waiting, for example when a slow navigation finally goes through,
+        # the promise is lost and the browser reports an error. The wait is
+        # then simply started again in the new document.
+        deadline = time.monotonic() + TIMEOUT
+        while True:
+            try:
+                return self.run(script)
+            except RuntimeError as error:
+                if "navigated or closed" not in str(error) or time.monotonic() > deadline:
+                    raise
 
     def close(self):
         """Shuts the browser down and removes its temporary profile."""
@@ -277,12 +289,26 @@ def as_shown(rows):
     return [[str(row[0]), row[1], row[2], str(row[3]), row[4], "%.2f" % row[5], "%.2f" % row[6]] for row in rows]
 
 
-def disabled(browser, button):
-    return browser.run("document.getElementById('%s').disabled" % button)
+def pager_button(button, pager="pagerTop"):
+    """JavaScript that finds a button of one of the two pagers: 'first',
+    'previous', 'next' or 'last' by name, or a page by its number."""
+    if isinstance(button, int):
+        return "document.querySelector('#%s button[data-page=\"%d\"]')" % (pager, button - 1)
+    return "document.querySelector('#%s button[data-go=%s]')" % (pager, button)
 
 
-def click(browser, element_id):
-    browser.run("document.getElementById('%s').click()" % element_id)
+def disabled(browser, button, pager="pagerTop"):
+    return browser.run(pager_button(button, pager) + ".disabled")
+
+
+def click(browser, button, pager="pagerTop"):
+    browser.run(pager_button(button, pager) + ".click()")
+
+
+def pager_labels(browser, pager="pagerTop"):
+    """The labels of a pager's items, with the current page in brackets."""
+    return browser.run("Array.from(document.getElementById('%s').children).map(function (item) {"
+                       " return item.classList.contains('active') ? '[' + item.textContent + ']' : item.textContent; })" % pager)
 
 
 def click_header(browser, column):
@@ -304,6 +330,7 @@ def main():
     database = sqlite3.connect("file:" + os.path.join(PROJECT, "data", "babyname.db").replace("\\", "/") + "?mode=ro", uri=True)
     bob = [list(row) for row in database.execute(RANGE_SQL, ("Bob", "Bobby"))]
     mar = [list(row) for row in database.execute(RANGE_SQL.replace("between ? and ?", "like ? escape '\\'"), ("Mar%",))]
+    s_to_t = [list(row) for row in database.execute(RANGE_SQL, ("S", "T"))]
 
     # The board sends 200 rows per page (DB_PAGE_ROWS in include/Definitions.h).
     # The "Mar" search is used because it spans exactly two pages.
@@ -319,8 +346,20 @@ def main():
         browser.open(base + "/")
         check(browser.wait_for("/^\\d+:\\d\\d:\\d\\d$/.test(document.getElementById('uptime').textContent)"),
               "the uptime is shown as hours:minutes:seconds")
+
+        # Bootstrap defines a set of colour variables on the document. If one
+        # of them has a value, the browser fetched the stylesheet from the
+        # board, unpacked it and applied it.
+        check(browser.wait_for("getComputedStyle(document.documentElement).getPropertyValue('--bs-blue').trim() != ''"),
+              "the Bootstrap stylesheet is applied")
         check(browser.run("document.getElementById('results').hidden"), "no results area without a search")
         check(browser.run("document.getElementById('problem').hidden"), "no problem is reported")
+
+        # The crash notice must be shown exactly when the board says a crash
+        # dump is waiting. The board is asked from inside the page.
+        waiting = browser.run("fetch('/api/status').then(function (r) { return r.json(); }).then(function (s) { return s.crash_dump; })")
+        check(browser.run("document.getElementById('crash').hidden") == (not waiting),
+              "the crash notice is %s, matching the board (crash dump waiting: %s)" % ("shown" if waiting else "hidden", waiting))
 
         # --- A search given in the address --------------------------------------
         print("\nA range in the address")
@@ -329,7 +368,10 @@ def main():
         check(browser.run(TABLE) == as_shown(bob), "the table shows the %d rows of the database" % len(bob))
         check(browser.run("[document.getElementById('from').value, document.getElementById('to').value]") == ["Bob", "Bobby"],
               "the search is shown in the form fields")
-        check(disabled(browser, "previous") and disabled(browser, "next"), "both paging buttons are off for a single page")
+        check(all(disabled(browser, button) for button in ("first", "previous", "next", "last")),
+              "all four paging buttons are off for a single page")
+        check(browser.run("document.getElementById('pagerTop').hidden && document.getElementById('pagerBottom').hidden"),
+              "and both pagers are hidden")
 
         print("\nThe address of the former results page")
         browser.open(base + "/query_db?from=Bob&to=Bobby")
@@ -359,11 +401,60 @@ def main():
         sizes = browser.run("performance.getEntriesByType('resource').filter(function (e) { return e.name.indexOf('/api/names') >= 0 && e.name.indexOf('after_name') < 0; }).map(function (e) { return e.transferSize; })")
         check(len(sizes) == 2 and sizes[0] > 0 and sizes[1] == 0, "the repeated page came from the browser's cache (transfer sizes %s)" % sizes)
 
+        # --- First and last ------------------------------------------------------
+        # A range with many pages. "last" has to reach a page the browser has
+        # never seen, and "previous" from there one it has no cursor for.
+        print("\nJumping to the first and last page of S..T")
+        pages = -(-len(s_to_t) // page_size)
+        last_start = (pages - 1) * page_size
+
+        def rows_status(start, count):
+            return "Rows %d to %d of %d" % (start + 1, start + count, len(s_to_t))
+
+        browser.open(base + "/?from=S&to=T")
+        check(wait_status(browser, rows_status(0, page_size)), "first page: " + rows_status(0, page_size))
+        check(disabled(browser, "first") and disabled(browser, "previous") and not disabled(browser, "next") and not disabled(browser, "last"),
+              "on the first page only 'next' and 'last' are available")
+        check(pager_labels(browser) == ["First", "Previous", "[1]", "2", "3", "Next", "Last"],
+              "the pager above the table shows: First Previous [1] 2 3 Next Last")
+        check(pager_labels(browser, "pagerBottom") == pager_labels(browser), "the pager below the table shows the same")
+
+        # A page number, from the pager below the table. Page 3 has not been
+        # seen, so it is fetched by position.
+        click(browser, 3, "pagerBottom")
+        check(wait_status(browser, rows_status(2 * page_size, page_size)) and browser.run(TABLE) == as_shown(s_to_t[2 * page_size:3 * page_size]),
+              "a click on page 3 below the table shows: " + rows_status(2 * page_size, page_size))
+        check(pager_labels(browser) == ["First", "Previous", "1", "2", "[3]", "4", "5", "Next", "Last"],
+              "the pager shows: First Previous 1 2 [3] 4 5 Next Last")
+
+        click(browser, "last")
+        check(wait_status(browser, rows_status(last_start, len(s_to_t) - last_start)), "'last' shows: " + rows_status(last_start, len(s_to_t) - last_start))
+        check(browser.run(TABLE) == as_shown(s_to_t[last_start:]), "with the last %d rows of the database" % (len(s_to_t) - last_start))
+        check(not disabled(browser, "first") and not disabled(browser, "previous") and disabled(browser, "next") and disabled(browser, "last"),
+              "on the last page only 'first' and 'previous' are available")
+
+        click(browser, "previous")
+        before_last = last_start - page_size
+        check(wait_status(browser, rows_status(before_last, page_size)) and browser.run(TABLE) == as_shown(s_to_t[before_last:last_start]),
+              "'previous' from the last page shows the page before it")
+        check(not any(disabled(browser, button) for button in ("first", "previous", "next", "last")),
+              "in the middle all four buttons are available")
+
+        click(browser, "next")
+        check(wait_status(browser, rows_status(last_start, len(s_to_t) - last_start)) and browser.run(TABLE) == as_shown(s_to_t[last_start:]),
+              "'next' returns to the last page")
+
+        click(browser, "first")
+        check(wait_status(browser, rows_status(0, page_size)) and browser.run(TABLE) == as_shown(s_to_t[:page_size]),
+              "'first' returns to the first page")
+
         # --- Sorting -------------------------------------------------------------
         # Sorting rearranges the rows on screen only. Both the page and Python sort
         # "stably" (rows that compare equal keep their order), so the expected
         # result can be computed here.
         print("\nSorting the rows shown")
+        browser.open(base + "/?prefix=Mar")
+        wait_status(browser, first_status)
         shown = mar[:page_size]
 
         click_header(browser, 3)

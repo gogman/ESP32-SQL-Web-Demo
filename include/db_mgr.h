@@ -133,6 +133,22 @@ public:
     bool getPage(const char *from, const char *to, const Cursor *after, int limit, const ChunkSink &emit);
 
     /*
+     * Produces the page that starts at a given position in the range: the
+     * same document as getPage(), but found by counting rows instead of by
+     * a cursor. offset is the number of rows of the range that come before
+     * the page, so 0 is the first page.
+     *
+     * This is what makes it possible to jump straight to a page whose cursor
+     * is not known, such as the last one. The price is that the rows before
+     * the page are read and discarded, so the cost grows with offset. To move
+     * to the next page, getPage() with a cursor is the cheaper choice.
+     *
+     * Everything else - the document, the return value, the lifetime of the
+     * strings - is as described for getPage().
+     */
+    bool getPageAt(const char *from, const char *to, long offset, int limit, const ChunkSink &emit);
+
+    /*
      * Counts the names in a range, with the same meaning of from and to as
      * in getPage().
      *
@@ -158,6 +174,9 @@ private:
     /* The compiled paging query, prepared in open() and reused by every getPage(). */
     sqlite3_stmt *pageStmt = nullptr;
 
+    /* The compiled query for a page found by position, used by getPageAt(). */
+    sqlite3_stmt *offsetStmt = nullptr;
+
     /* The compiled counting query, prepared in open() and reused by every getCount(). */
     sqlite3_stmt *countStmt = nullptr;
 
@@ -175,11 +194,17 @@ private:
      */
     char chunk[CHUNK_SIZE];
 
-    /* Fills in the parameters of the prepared query for one page. */
+    /* Fills in the parameters of the cursor query for one page. */
     bool bindPage(const char *from, const char *to, const Cursor *after, int limit);
 
-    /* Runs the query and writes its rows; sets more when rows remain. */
-    bool writeRows(ChunkWriter &out, const char *from, const char *to, const Cursor *after, int limit, bool &more);
+    /* Fills in the parameters of the position query for one page. */
+    bool bindOffsetPage(const char *from, const char *to, long offset, int limit);
+
+    /* Steps through an already bound statement and writes its rows; sets more when rows remain. */
+    bool writeRows(ChunkWriter &out, sqlite3_stmt *stmt, int limit, bool &more);
+
+    /* Writes the complete JSON document for one page from an already bound statement. */
+    bool writePage(sqlite3_stmt *stmt, bool bound, int limit, const ChunkSink &emit);
 
     /* Stores a message for lastError(), cutting it short if it is too long. */
     void setError(const char *message);

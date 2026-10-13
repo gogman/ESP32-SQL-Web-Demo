@@ -19,6 +19,7 @@ Note on the timings: with the default address, Windows looks up the name
 the board's IP address instead to see how fast the board itself answers.
 """
 
+import gzip
 import json
 import os
 import sqlite3
@@ -140,6 +141,12 @@ def main():
     check(state.get("fs_mounted") is True, "filesystem is mounted")
     check(state.get("db_open") is True, "database is open")
 
+    # Whether a crash dump is waiting. Either answer is valid; a waiting dump
+    # is pointed out here because it means the firmware crashed at some point.
+    check(isinstance(state.get("crash_dump"), bool), "crash dump waiting: %s" % state.get("crash_dump"))
+    if state.get("crash_dump"):
+        print("     NOTE: task %s crashed at %s; see 'Reading a crash' in docs/how-it-works.md" % (state.get("crash_task"), state.get("crash_pc")))
+
     # --- Ranges ------------------------------------------------------------
     # The board returns each row as a JSON array, which Python reads as a list;
     # sqlite3 returns tuples. Converting the reference rows to lists makes the
@@ -158,6 +165,31 @@ def main():
         except Exception as error:
             # A failure in one range is reported and the remaining ranges still run.
             check(False, "%s..%s: %s" % (low, high, error))
+
+    # --- Pages by position ---------------------------------------------------
+    # Besides "continue after this row", the board can be asked for the page at
+    # a given position in the range ("offset"). The page uses that to jump to a
+    # page it has no cursor for, such as the last one. Each answer must be the
+    # matching slice of the full result, and "more" must say whether rows follow.
+    print("\nPages by position")
+    low, high = "S", "T"
+    want = [list(row) for row in database.execute(RANGE_SQL, (low, high))]
+    for offset in (0, 200, len(want) - len(want) % 200, len(want), len(want) + 500):
+        query = urllib.parse.urlencode({"from": low, "to": high, "offset": offset})
+        status, _, body, ms = request(base, "/api/names?" + query)
+        data = json.loads(body)
+        expected = want[offset:offset + 200]
+        check(status == 200 and data.get("rows") == expected and data.get("more") == (offset + 200 < len(want)),
+              "%s..%s from position %4d: %3d rows, more=%s, %4.0f ms" % (low, high, offset, len(data.get("rows", [])), data.get("more"), ms))
+
+    # The deepest position there is: the last page of the whole table. This is
+    # the most expensive request of its kind, so its time is worth seeing.
+    everything = database.execute("Select count(*) from gendered_names").fetchone()[0]
+    offset = (everything - 1) // 200 * 200
+    status, _, body, ms = request(base, "/api/names?" + urllib.parse.urlencode({"prefix": "", "offset": offset}))
+    data = json.loads(body)
+    check(status == 200 and len(data.get("rows", [])) == everything - offset and data.get("more") is False,
+          "the last page of the whole table (position %d): %d rows in %.0f ms" % (offset, len(data.get("rows", [])), ms))
 
     # --- Names starting with -----------------------------------------------
     # The reference here is computed in a different way from the board on
@@ -210,17 +242,22 @@ def main():
     status, _, _, _ = request(base, "/query_db?from=Bob&to=Bobby")
     check(status == 200, "the old results address still works")
 
-    # The files folder. These two checks expect the file data/files/read.me,
-    # beginning with "Hello", to be in the filesystem image on the board.
-    status, _, body, _ = request(base, "/files/")
-    check(status == 200 and b"read.me" in body, "the files folder is listed")
-    status, _, body, _ = request(base, "/files/read.me")
-    check(status == 200 and body.startswith(b"Hello"), "a file downloads")
+    # The Bootstrap stylesheet. The board sends the compressed file as it is
+    # stored, so the body must unpack to exactly web/bootstrap.min.css, and
+    # the headers must tell the browser that it is compressed CSS.
+    status, headers, body, ms = request(base, "/bootstrap.min.css?v=5.3.8")
+    with open(os.path.join(PROJECT, "web", "bootstrap.min.css"), "rb") as file:
+        source = file.read()
+    check(status == 200 and headers.get("Content-Encoding") == "gzip" and headers.get("Content-Type", "").startswith("text/css"),
+          "the stylesheet is served as gzip-compressed CSS, %d bytes in %.0f ms" % (len(body), ms))
+    check(status == 200 and gzip.decompress(body) == source, "and unpacks to web/bootstrap.min.css")
+    check("immutable" in headers.get("Cache-Control", ""), "the stylesheet may be cached (%s)" % headers.get("Cache-Control"))
 
-    # An attempt to climb out of the files folder with ".." and fetch the
-    # database itself. It must be refused.
-    status, _, _, _ = request(base, "/files/../babyname.db")
-    check(status == 404, "nothing outside the files folder can be downloaded")
+    # Nothing else on the filesystem is published, so neither the removed file
+    # listing nor the database file itself may be reachable by address.
+    for address in ("/files/", "/babyname.db", "/files/../babyname.db"):
+        status, _, _, _ = request(base, address)
+        check(status == 404, "%s is answered 404" % address)
     status, _, _, _ = request(base, "/nothing-here")
     check(status == 404, "an unknown address is answered 404")
 

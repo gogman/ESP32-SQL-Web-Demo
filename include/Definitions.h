@@ -111,17 +111,15 @@ static const int DB_PAGE_ROWS = 200;
 #define STATUS_API_URL "/api/status"
 
 /*
- * Downloadable files.
+ * The Bootstrap stylesheet.
  *
- * FILES_DIR is the folder inside the filesystem (data/files in the project,
- * uploaded with "pio run -t uploadfs"). FILES_URL is the address it is
- * published under. The _SLASH variants are the same with a trailing slash,
- * needed where a path is built by appending a file name.
+ * CSS_URL is the address the page loads it from; web/index.html names the
+ * same address. CSS_FILE is the gzip-compressed copy inside the filesystem
+ * (data/bootstrap.min.css.gz in the project, made by tools/pack_css.py and
+ * uploaded with "pio run -t uploadfs").
  */
-#define FILES_DIR "/files"
-#define FILES_DIR_SLASH FILES_DIR "/"
-#define FILES_URL "/files"
-#define FILES_URL_SLASH FILES_URL "/"
+#define CSS_URL "/bootstrap.min.css"
+#define CSS_FILE "/bootstrap.min.css.gz"
 
 /* ------------------------------------------------------------------ */
 /* Diagnostics                                                        */

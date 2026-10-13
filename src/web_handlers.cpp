@@ -13,6 +13,7 @@
 #include "web_handlers.h"
 #include <WiFi.h>
 #include "LittleFS.h"
+#include "esp_core_dump.h"
 #include "Definitions.h"
 
 /*
@@ -69,29 +70,6 @@ static char pageEtag[24] = "";
 static const char HIGHEST_CHARACTER[] = "\xF4\x8F\xBF\xBF";
 
 /*
- * The look of the files page, matching the application page. It is a macro
- * rather than a variable so it can be joined to the string literal below at
- * compile time.
- */
-#define PAGE_STYLE "<style>body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; font-size: large; Color: #000088; }</style>"
-
-/*
- * The fixed pieces of the files page. The page is sent as: head, then
- * either the table (head, one row per file, end) or the "no files" line,
- * then the end piece with the back button.
- */
-static const char FILES_PAGE_HEAD[] =
-    "<html><head><title>ESP32 Files</title>" PAGE_STYLE "</head><body><h1>Files</h1>";
-
-static const char FILES_TABLE_HEAD[] = "<table cellspacing='1' cellpadding='1' border='1'><tr><td>Name</td><td>Size (bytes)</td></tr>";
-
-static const char FILES_NO_FILES[] = "<p>No files found</p>";
-
-static const char FILES_TABLE_END[] = "</table>";
-
-static const char FILES_PAGE_END[] = "<p><input type=button onclick='location.href=\"/\"' value='back'/></p></body></html>";
-
-/*
  * What the handlers work with. The web server calls a handler as a plain
  * function with no arguments, so there is no way to pass these in; they are
  * stored here by registerWebHandlers() instead.
@@ -112,6 +90,20 @@ static bool filesystemMounted;
  * cached answers are never used again.
  */
 static char databaseVersion[32] = "";
+
+/*
+ * Whether a crash dump is waiting in the coredump partition, and if so,
+ * which task crashed and at which address in the program.
+ *
+ * When the firmware crashes, the framework saves the state of every task to
+ * that partition before restarting. The dump stays there until it is erased
+ * or the next crash overwrites it, so "true" means "there was a crash at
+ * some point, and it can still be examined", not "the board just crashed".
+ * It is looked up once at startup and reported by /api/status.
+ */
+static bool crashDumpWaiting;
+static char crashTask[16] = "";
+static uint32_t crashAddress;
 
 /*
  * Switches the LED on for as long as a request is being answered.
@@ -162,86 +154,6 @@ static void sendJsonError(int code, const char *message)
   /* An error describes this moment only; the browser must not store and reuse it. */
   server->sendHeader("Cache-Control", "no-store");
   server->send(code, "application/json", body);
-}
-
-/*
- * Returns a copy of text that is safe to place inside HTML.
- *
- * The five characters that have a meaning in HTML are replaced by their
- * named or numbered entities. Without this, a file called "<b>x" would be
- * read by the browser as markup rather than shown as a name. Both kinds of
- * quote are included because the result is also used inside an attribute.
- */
-static String htmlEscaped(const char *text)
-{
-  String escaped;
-
-  for (; *text; text++)
-  {
-    switch (*text)
-    {
-    case '&':
-      escaped += "&amp;";
-      break;
-    case '<':
-      escaped += "&lt;";
-      break;
-    case '>':
-      escaped += "&gt;";
-      break;
-    case '"':
-      escaped += "&quot;";
-      break;
-    case '\'':
-      escaped += "&#39;";
-      break;
-    default:
-      escaped += *text;
-    }
-  }
-
-  return escaped;
-}
-
-/*
- * Works out the Content-Type header for a file from the end of its name.
- *
- * The browser uses this to decide what to do with a download: show it as
- * text, display it as an image, and so on. Anything not in the table is
- * sent as "application/octet-stream", meaning "arbitrary data", which makes
- * the browser offer to save the file.
- */
-static const char *contentType(const String &path)
-{
-  static const struct
-  {
-    const char *extension;
-    const char *type;
-  } TYPES[] = {
-      {".html", "text/html"},
-      {".htm", "text/html"},
-      {".css", "text/css"},
-      {".js", "application/javascript"},
-      {".json", "application/json"},
-      {".txt", "text/plain"},
-      {".me", "text/plain"},
-      {".csv", "text/csv"},
-      {".png", "image/png"},
-      {".jpg", "image/jpeg"},
-      {".jpeg", "image/jpeg"},
-      {".gif", "image/gif"},
-      {".svg", "image/svg+xml"},
-      {".ico", "image/x-icon"},
-      {".pdf", "application/pdf"},
-  };
-
-  for (const auto &entry : TYPES)
-  {
-    if (path.endsWith(entry.extension))
-      return entry.type;
-  }
-
-  return "application/octet-stream";
 }
 
 /*
@@ -332,6 +244,10 @@ static const char *dataCacheControl()
  *   after_year,
  *   after_state          Optional. The last row of the previous page; this
  *                        page continues after it. Left out for the first page.
+ *   offset               Optional, and only used when no cursor is given. The
+ *                        number of rows of the range before this page. It
+ *                        reaches any page directly, at a cost that grows with
+ *                        the number; the page uses it for jumps such as "last".
  *   v                    Optional. The database version from /api/status.
  *                        Its value is not examined; its presence marks the
  *                        response as safe to cache.
@@ -369,6 +285,13 @@ static void handleNamesApi()
   const bool hasCursor = server->hasArg("after_name");
 
   /*
+   * The alternative to a cursor: the position of the page in the range.
+   * A cursor wins when both are given, because it is the cheaper way.
+   */
+  const bool hasOffset = !hasCursor && server->hasArg("offset");
+  const long offset = server->arg("offset").toInt();
+
+  /*
    * Measurements for the timing log. The time spent sending is added up
    * separately, so the log can show database work and network work apart.
    */
@@ -379,13 +302,12 @@ static void handleNamesApi()
   const unsigned long pageStart = micros();
 
   /*
-   * Run the query. The last argument is the function that receives the
-   * output, written as a lambda: an unnamed function defined on the spot.
-   * The "[&]" lets it use the local variables of this handler directly. It
-   * is called once for every buffer-full of JSON the database produces.
+   * The function that receives the output of the query, written as a
+   * lambda: an unnamed function defined on the spot. The "[&]" lets it use
+   * the local variables of this handler directly. It is called once for
+   * every buffer-full of JSON the database produces.
    */
-  bool result = database->getPage(from.c_str(), to.c_str(), hasCursor ? &after : nullptr, DB_PAGE_ROWS,
-                                  [&](const char *data, size_t length)
+  const db_mgr::ChunkSink sendPiece = [&](const char *data, size_t length)
                                   {
                                     const unsigned long sendStart = micros();
 
@@ -410,7 +332,12 @@ static void handleNamesApi()
                                     server->sendChunk(data, length);
                                     sendMicros += micros() - sendStart;
                                     bytes += length;
-                                    chunks++; });
+                                    chunks++; };
+
+  /* By position if one was asked for, otherwise by cursor (or the first page). */
+  const bool result = hasOffset
+                          ? database->getPageAt(from.c_str(), to.c_str(), offset, DB_PAGE_ROWS, sendPiece)
+                          : database->getPage(from.c_str(), to.c_str(), hasCursor ? &after : nullptr, DB_PAGE_ROWS, sendPiece);
 
   const unsigned long pageMicros = micros() - pageStart;
 
@@ -432,9 +359,9 @@ static void handleNamesApi()
      * the sending time is subtracted to leave the database's share: running
      * the query and writing the rows as JSON.
      */
-    Serial.printf("Names '%s'..'%s' after '%s' %s: database %.2f ms, sending %.2f ms (%u bytes in %u chunks), whole response %.2f ms\n",
+    Serial.printf("Names '%s'..'%s' after '%s' offset %ld %s: database %.2f ms, sending %.2f ms (%u bytes in %u chunks), whole response %.2f ms\n",
                   from.c_str(), server->hasArg("prefix") ? "(prefix)" : to.c_str(), afterName.c_str(),
-                  result ? "ok" : database->lastError(),
+                  hasOffset ? offset : 0L, result ? "ok" : database->lastError(),
                   (pageMicros - sendMicros) / 1000.0, sendMicros / 1000.0, (unsigned)bytes, chunks,
                   (micros() - responseStart) / 1000.0);
   }
@@ -486,9 +413,10 @@ static void handleCountApi()
  * GET /api/status - the state of the device, as JSON.
  *
  * The page uses several of the values: uptime (seconds since start),
- * db_version, and fs_mounted, db_open and db_error to warn when the data is
- * not available. The rest is for diagnosis: which firmware build is running,
- * how the board is connected, and how much memory is free.
+ * db_version, fs_mounted, db_open and db_error to warn when the data is
+ * not available, and crash_dump, crash_task and crash_pc to say that a
+ * crash was recorded. The rest is for diagnosis: which firmware build is
+ * running, how the board is connected, and how much memory is free.
  */
 static void handleStatusApi()
 {
@@ -511,14 +439,16 @@ static void handleStatusApi()
    * The document is small and of predictable size, so it is built in one
    * buffer and sent in one piece.
    */
-  char body[512];
+  char body[600];
   snprintf(body, sizeof(body),
            "{\"uptime\":%lu,\"build\":\"%s\",\"network\":\"%s\",\"ip\":\"%s\","
            "\"fs_mounted\":%s,\"db_open\":%s,\"db_error\":\"%s\",\"db_version\":\"%s\",\"db_cache_kib\":%d,"
+           "\"crash_dump\":%s,\"crash_task\":\"%s\",\"crash_pc\":\"0x%08x\","
            "\"heap_free\":%u,\"psram_size\":%u,\"psram_free\":%u,\"flash_size\":%u}",
            millis() / 1000, BUILD_TIME, accessPoint ? "access point" : "station", ip.c_str(),
            filesystemMounted ? "true" : "false", database->isOpen() ? "true" : "false", databaseError,
            databaseVersion, databaseCacheKiB,
+           crashDumpWaiting ? "true" : "false", crashTask, (unsigned)crashAddress,
            (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getPsramSize(), (unsigned)ESP.getFreePsram(),
            (unsigned)ESP.getFlashChipSize());
 
@@ -528,132 +458,48 @@ static void handleStatusApi()
 }
 
 /*
- * GET /files and GET /files/ - a page listing the downloadable files.
+ * GET /bootstrap.min.css - the Bootstrap stylesheet.
  *
- * The page is sent in chunks as the folder is read, one chunk per file, so
- * its size does not depend on how much memory is free.
+ * The file on the filesystem is gzip-compressed (about 31 KB instead of
+ * 232 KB) and is sent exactly as stored; the browser unpacks it. Every
+ * browser accepts gzip, so no uncompressed copy is kept.
  */
-static void handleFileList()
+static void handleCss()
 {
   ActivityLed led;
 
-  server->sendHeader("Cache-Control", "no-cache");
-  server->setContentLength(CONTENT_LENGTH_UNKNOWN);
-  server->send(200, "text/html", "");
-  server->sendChunk(FILES_PAGE_HEAD);
+  /* Without a mounted filesystem there is no stylesheet; the page then shows unstyled. */
+  File file = filesystemMounted && LittleFS.exists(CSS_FILE) ? LittleFS.open(CSS_FILE) : File();
 
-  /*
-   * The table's opening is held back until the first file turns up. An
-   * empty or missing folder then produces the "No files found" line instead
-   * of a table with only a header row.
-   */
-  bool tableOpen = false;
-
-  /* Without a mounted filesystem there is nothing to open, and the list stays empty. */
-  File dir = filesystemMounted ? LittleFS.open(FILES_DIR) : File();
-
-  /* The folder is missing when no filesystem image with data/files was uploaded. */
-  if (dir && dir.isDirectory())
+  if (!file)
   {
-    /* openNextFile() returns the entries one by one and an empty File at the end. */
-    for (File entry = dir.openNextFile(); entry; entry = dir.openNextFile())
-    {
-      /* Only the files directly in the folder are listed, not subfolders. */
-      if (entry.isDirectory())
-        continue;
-
-      if (!tableOpen)
-      {
-        server->sendChunk(FILES_TABLE_HEAD);
-        tableOpen = true;
-      }
-
-      /*
-       * One table row: the name as a link to /files/<name>, and the size.
-       * The name is escaped because it is placed into HTML twice, once in
-       * the link address and once as the visible text. If a very long name
-       * makes the row exceed the buffer, snprintf cuts it short, and min()
-       * keeps the length within what was actually written.
-       */
-      const String name = htmlEscaped(entry.name());
-      char row[384];
-      int length = snprintf(row, sizeof(row), "<tr><td><a href='%s/%s'>%s</a></td><td>%u</td></tr>",
-                            FILES_URL, name.c_str(), name.c_str(), (unsigned)entry.size());
-      server->sendChunk(row, min((size_t)length, sizeof(row) - 1));
-    }
+    server->sendHeader("Cache-Control", "no-store");
+    server->send(404, "text/plain", "The stylesheet is not on the filesystem\n");
+    return;
   }
 
-  if (tableOpen)
-    server->sendChunk(FILES_TABLE_END);
-  else
-    server->sendChunk(FILES_NO_FILES);
-
-  server->sendChunk(FILES_PAGE_END);
-  server->endChunks();
-}
-
-/*
- * Sends one file from the files folder.
- *
- * uri is the requested address, which starts with FILES_URL_SLASH, for
- * example "/files/read.me". Returns true if the file was sent, false if
- * there is no such file; the caller then answers with a 404.
- */
-static bool sendFile(const String &uri)
-{
   /*
-   * ".." in a path means "the folder above". An address such as
-   * /files/../babyname.db would otherwise reach files outside the folder,
-   * including the database. Any address containing ".." is refused.
+   * The page asks for the stylesheet with its version in the address
+   * (?v=5.3.8), so a different version has a different address and this
+   * answer can be kept by the browser for a year without asking again.
+   *
+   * streamFile() sends the size and then the content in blocks. Because
+   * the file's name ends in ".gz", it also adds "Content-Encoding: gzip",
+   * which is what tells the browser to unpack it.
    */
-  if (uri.indexOf("..") >= 0)
-    return false;
-
-  /* Without a mounted filesystem there are no files. */
-  if (!filesystemMounted)
-    return false;
-
-  /*
-   * Turn the address into a path on the filesystem: drop the "/files/" at
-   * the front of the address and put the folder's path there instead.
-   */
-  String path = FILES_DIR_SLASH;
-  path += uri.substring(strlen(FILES_URL_SLASH));
-
-  /*
-   * Checked first because LittleFS.open() on a missing file logs an error
-   * message; exists() answers quietly.
-   */
-  if (!LittleFS.exists(path))
-    return false;
-
-  File file = LittleFS.open(path);
-
-  /* A subfolder is not something that can be downloaded. */
-  if (!file || file.isDirectory())
-    return false;
-
-  /*
-   * The browser may reuse the file for a minute without asking again.
-   * streamFile() sends the headers, including the size, and then the
-   * content in blocks, so large files do not need to fit in memory.
-   */
-  server->sendHeader("Cache-Control", "max-age=60");
-  server->streamFile(file, contentType(path));
-  return true;
+  server->sendHeader("Cache-Control", "public, max-age=31536000, immutable");
+  server->streamFile(file, "text/css");
 }
 
 /*
  * Called for every request that no registered address matches.
  *
- * That covers three cases:
+ * That covers two cases:
  *
  * 1. A method other than GET. Every address is registered for GET only, so
  *    a POST to an existing address also lands here. It is answered with
  *    "405 Method Not Allowed" and an Allow header naming what is accepted.
- * 2. A file below /files/. File names are not known in advance and cannot
- *    be registered one by one, so downloads are served from here.
- * 3. Everything else, which is a plain "404 Not Found".
+ * 2. Everything else, which is a plain "404 Not Found".
  */
 static void handleOther()
 {
@@ -667,10 +513,6 @@ static void handleOther()
   }
 
   const String uri = server->uri();
-
-  /* If the address is in the files folder but no such file exists, fall through to the 404. */
-  if (uri.startsWith(FILES_URL_SLASH) && sendFile(uri))
-    return;
 
   /*
    * Build the 404 text. reserve() sizes the String once for the fixed words
@@ -725,6 +567,31 @@ void registerWebHandlers(ChunkServer &webServer, db_mgr &db, int cacheKiB, bool 
     snprintf(databaseVersion, sizeof(databaseVersion), "%u-%lu", (unsigned)file.size(), (unsigned long)file.getLastWrite());
 
   /*
+   * Look for a crash dump. esp_core_dump_image_check() verifies that the
+   * coredump partition holds a complete dump with a correct checksum; an
+   * erased partition, or none at all, makes it report an error. The summary
+   * then gives the name of the task that crashed and the program address it
+   * crashed at. The task name is made safe for JSON, since it is read from
+   * flash and reported inside a JSON string.
+   */
+  crashDumpWaiting = esp_core_dump_image_check() == ESP_OK;
+
+  if (crashDumpWaiting)
+  {
+    /* static: the summary is a few hundred bytes, too much to put on the stack for one use. */
+    static esp_core_dump_summary_t summary;
+
+    if (esp_core_dump_get_summary(&summary) == ESP_OK)
+    {
+      copyJsonSafe(crashTask, sizeof(crashTask), summary.exc_task);
+      crashAddress = summary.exc_pc;
+    }
+
+    Serial.printf("A crash dump is waiting: task '%s' at 0x%08x. See docs/how-it-works.md, \"Reading a crash\"\n",
+                  crashTask, (unsigned)crashAddress);
+  }
+
+  /*
    * The web server only keeps the request headers it has been told to
    * collect; all others are discarded while the request is read. Without
    * this, server->header("If-None-Match") in handleIndex() would always be
@@ -746,13 +613,9 @@ void registerWebHandlers(ChunkServer &webServer, db_mgr &db, int cacheKiB, bool 
   webServer.on(COUNT_API_URL, HTTP_GET, handleCountApi);
   webServer.on(STATUS_API_URL, HTTP_GET, handleStatusApi);
 
-  /*
-   * The file listing. An address is matched exactly, so the forms with and
-   * without the trailing slash are registered separately.
-   */
-  webServer.on(FILES_URL, HTTP_GET, handleFileList);
-  webServer.on(FILES_URL_SLASH, HTTP_GET, handleFileList);
+  /* The stylesheet the page links to. */
+  webServer.on(CSS_URL, HTTP_GET, handleCss);
 
-  /* Downloads and all errors. */
+  /* All errors. */
   webServer.onNotFound(handleOther);
 }

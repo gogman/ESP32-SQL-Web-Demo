@@ -19,8 +19,8 @@
 #           updating over WiFi would need two. The release build fills about
 #           68% of it and the debug build about 72%, so there is space to grow.
 #
-# spiffs    2048 KB. The filesystem holding the database (about 816 KB) and the
-#           files folder. The subtype is called spiffs for historical reasons;
+# spiffs    2048 KB. The filesystem holding the database (about 816 KB).
+#           The subtype is called spiffs for historical reasons;
 #           it is formatted and used as LittleFS (see board_build.filesystem in
 #           platformio.ini). It occupies exactly the second half of the chip,
 #           less the last 64 KB.

@@ -17,9 +17,8 @@
  *   /api/names    one page of names from the database, as JSON
  *   /api/count    how many names a range holds, as JSON
  *   /api/status   the state of the device, as JSON
- *   /files, /files/         a listing of the downloadable files
- *   /files/<name>           one downloadable file
- *   anything else           a 404 (or 405 for a method other than GET)
+ *   /bootstrap.min.css  the Bootstrap stylesheet, gzip-compressed
+ *   anything else the 404 answer (or 405 for a method other than GET)
  *
  * Call it once from setup(), after the attempt to mount the filesystem (the
  * handlers read the database file's size and date from it) and before

@@ -4,6 +4,16 @@ SQLite_Web is firmware for an ESP32 board that serves a small web application. T
 
 This document describes how the program is put together, how the web page works, how to build, test and diagnose it, what is known to be wrong or fragile, and what could be improved next. It reflects the state of the project on 13 October 2026.
 
+## Purpose
+
+SQLite_Web is a read-only demonstration. The board never changes its data, and it is meant for a trusted network. Three choices in the design follow from that:
+
+- The database is opened read-only, so a power loss cannot damage it and answers can be cached for as long as the database version stays the same.
+- There is no login and no encryption.
+- The data is replaced only by rebuilding the database on a PC and uploading the filesystem.
+
+If the board is ever asked to write data, or is exposed to people who are not trusted, all three have to be revisited.
+
 ## At a glance
 
 | | |
@@ -29,9 +39,11 @@ This document describes how the program is put together, how the web page works,
 | `include/Definitions.h` | All settings |
 | `include/Secrets.h` | WiFi name and passwords; not kept in version control. `Secrets.example.h` is the template |
 | `web/index.html` | The application page, built into the firmware |
-| `data/` | The filesystem image: `babyname.db` and the `files` folder |
+| `web/bootstrap.min.css` | Bootstrap 5.3.8, the stylesheet the page links to. Not uploaded itself; see `tools/pack_css.py` |
+| `data/` | The filesystem image: `babyname.db` and `bootstrap.min.css.gz` |
 | `db_backup/babyname.original.db` | The original database that `data/babyname.db` is built from |
 | `tools/rebuild_db.py` | Builds `data/babyname.db` from the original |
+| `tools/pack_css.py` | Compresses `web/bootstrap.min.css` into `data/bootstrap.min.css.gz` |
 | `tools/test_api.py` | Checks the addresses of a running board against the database file |
 | `tools/test_page.py` | Checks the page of a running board in a real browser |
 | `defpart.csv` | The flash partition table |
@@ -85,8 +97,7 @@ All addresses accept `GET` only.
 | `/api/names` | One page of names as JSON |
 | `/api/count` | The number of names in a range as JSON |
 | `/api/status` | The state of the device as JSON |
-| `/files`, `/files/` | An HTML listing of the downloadable files |
-| `/files/<name>` | One file from the `files` folder |
+| `/bootstrap.min.css` | The Bootstrap stylesheet, gzip-compressed |
 | anything else | `404`, or `405` for a method other than `GET` |
 
 ### `/api/names`
@@ -96,6 +107,7 @@ All addresses accept `GET` only.
 | `prefix` | Names starting with this text. Use this, or `from` and `to` |
 | `from`, `to` | The first and last name of a range, both included |
 | `after_name`, `after_year`, `after_state` | Optional. The last row of the previous page; the answer continues after it |
+| `offset` | Optional, and only used when no cursor is given. The number of rows of the range before the page. Reaches any page directly, at a cost that grows with the number |
 | `v` | Optional. The database version from `/api/status`. Its presence makes the answer cacheable |
 
 The answer has this form:
@@ -123,13 +135,23 @@ It is a separate address, and not part of every page of rows, because counting r
 | `network`, `ip` | `station` or `access point`, and the board's address |
 | `fs_mounted` | Whether the filesystem could be mounted |
 | `db_open`, `db_error` | Whether the database is open, and the reason if it is not |
+| `crash_dump` | Whether a crash dump is waiting in the `coredump` partition; see [Reading a crash](#reading-a-crash) |
+| `crash_task`, `crash_pc` | The task that crashed and the program address it crashed at; empty and `0x00000000` when no dump is waiting |
 | `db_version` | The database file's size and modification time; changes when the database is replaced |
 | `db_cache_kib` | The size of SQLite's page cache |
 | `heap_free`, `psram_size`, `psram_free`, `flash_size` | Memory figures in bytes |
 
-### Files
+### `/bootstrap.min.css`
 
-The listing shows the files directly inside the `files` folder with their sizes. Subfolders are not listed. Any address containing `..` is refused, so nothing outside the folder, including the database, can be downloaded.
+The page links to Bootstrap 5.3.8. The stylesheet is 232 KB, so it is not built into the firmware like the page. It is kept on the filesystem as `bootstrap.min.css.gz`, 31 KB, and sent exactly as stored with `Content-Encoding: gzip`; the browser unpacks it. No uncompressed copy is on the board, because every browser accepts gzip.
+
+The page asks for it as `/bootstrap.min.css?v=5.3.8`. With the version in the address, the answer is marked `public, max-age=31536000, immutable`, so a browser fetches it once and does not ask again. If the file or the filesystem is missing, the answer is a 404 and the page still works, without Bootstrap's styling.
+
+To change the version: replace `web/bootstrap.min.css`, run `python tools/pack_css.py`, change the version in the link in `web/index.html`, then upload both the filesystem and the firmware.
+
+All of the page's styling comes from Bootstrap's classes; see [Styling](#styling).
+
+This is the only file the board publishes. The database file is used by the firmware only and cannot be downloaded.
 
 ## The database
 
@@ -143,9 +165,9 @@ The listing shows the files directly inside the `files` folder with their sizes.
 
 ### The queries
 
-The firmware runs two queries, both compiled once when the database is opened.
+The firmware runs three queries, all compiled once when the database is opened.
 
-Rows:
+Rows, continuing after a cursor:
 
 ```sql
 Select year, state, name, total_babies, primary_sex, primary_sex_ratio, per_100k_in_state
@@ -155,6 +177,17 @@ order by name, year, state limit ?6
 ```
 
 `?1` and `?2` bound the names. `?3` to `?5` are the cursor: the key of the last row already shown. `?6` is the row limit.
+
+Rows, by position:
+
+```sql
+Select year, state, name, total_babies, primary_sex, primary_sex_ratio, per_100k_in_state
+from gendered_names
+where name between ?1 and ?2
+order by name, year, state limit ?3 offset ?4
+```
+
+This one reads and discards the first `?4` rows of the range before returning any. It exists for jumps to a page whose cursor is not known.
 
 Count:
 
@@ -174,6 +207,12 @@ Two details make this work:
 - The query asks for one row more than the page size. If that extra row exists, more data follows and `more` is set to `true`. The extra row is not sent; it becomes the first row of the next page.
 
 "Names starting with X" is run as the range from `X` to `X` followed by the highest possible character.
+
+### Jumping to a page
+
+A cursor only leads to the page after one already seen. To reach any other page, such as the last one, the board is asked by position with `offset`. The cost of that grows with the position, because the rows before the page are read and discarded: the last page of a 1,553-row range takes about as long as any other page, while the last page of the whole table (position 25,000) takes about 0.7 s.
+
+The page therefore uses a cursor whenever it has one and a position only when it does not.
 
 ### Output
 
@@ -209,11 +248,32 @@ Because the address always describes the search, results can be bookmarked and s
 
 ### Structure
 
-- **Uptime line.** A `span` with the id `uptime` shows `...` until the script fills it in from `/api/status`.
-- **Problem line.** A paragraph with the id `problem`, hidden unless the board reports that the filesystem is not mounted or the database is not open.
-- **Two forms**, `prefixForm` and `rangeForm`. They still declare method `GET` and action `/`, which is what they would do without the script, but the script handles their submission. The `id` attributes of the fields let the script read them and write the current search back.
-- **Files link.** Leads to the file listing, a separate page produced by the board.
-- **Results area.** A `div` with the id `results`, hidden while there is no search. The table inside is hidden separately, so an empty result shows just the status line. The table heading (`head`) is clickable for sorting.
+- **Header.** A coloured bar with the title and the uptime. A `span` with the id `uptime` shows `...` until the script fills it in from `/api/status`.
+- **Problem line.** A red alert box with the id `problem`, hidden unless the board reports that the filesystem is not mounted or the database is not open.
+- **Crash notice.** A yellow alert box with the id `crash`, shown when the board reports a waiting crash dump.
+- **Two forms**, `prefixForm` and `rangeForm`, together in one card. They still declare method `GET` and action `/`, which is what they would do without the script, but the script handles their submission. The `id` attributes of the fields let the script read them and write the current search back.
+- **Results area.** A `div` with the id `results`, hidden while there is no search. The table inside is hidden separately, so an empty result shows just the status line. The table heading (`head`) is clickable for sorting. Above and below the table is a pager, `pagerTop` and `pagerBottom`: two empty lists that the script fills in.
+
+### Styling
+
+The look comes from Bootstrap's classes in the markup. The page has one style rule of its own, the pointer cursor on the table heading, because Bootstrap has no class for it.
+
+| Part | Bootstrap classes |
+|---|---|
+| Page width and margins | `container` |
+| Header bar | `bg-primary`, `text-white`, flex utilities |
+| Problem line | `alert alert-danger` |
+| Crash notice | `alert alert-warning` |
+| Search forms | `card`, the grid (`row`, `col-sm`), `form-control`, `btn btn-primary` |
+| Table | `table table-sm table-striped table-hover table-bordered` inside `table-responsive`, which lets a wide table scroll sideways on a narrow screen |
+| Pagers | `pagination` with `page-item` and `page-link`; `active` marks the current page and `disabled` an unavailable item |
+
+Number cells are right-aligned: `render()` gives every cell holding a number the class `text-end`.
+
+Two things to keep in mind when changing the markup:
+
+- The script hides elements with the `hidden` attribute. Bootstrap's display classes such as `d-flex` override that attribute, so they must not be put on `problem`, `crash`, `results` or `table`.
+- If the stylesheet cannot be loaded, the page still works, unstyled.
 
 ### Script variables
 
@@ -224,7 +284,8 @@ Because the address always describes the search, results can be bookmarked and s
 | `searchId` | A number increased with every new search. Each request remembers the value it started with, and its answer is ignored if a newer search has begun since |
 | `page` | The number of the page being shown, counting from 0 |
 | `cursors` | `cursors[i]` is the row that produces page `i`; `null` for page 0. Keeping all of them is what makes "previous" possible: going back is asking again with an earlier cursor |
-| `starts` | `starts[i]` is how many rows come before page `i`, used for the "Rows 201 to 400" text |
+| `starts` | `starts[i]` is how many rows come before page `i`, used for the "Rows 201 to 400" text and as the position when a page is requested without a cursor |
+| `pageSize` | How many rows the board puts on a full page. Learned from the first page when more rows follow; `0` until then |
 | `total` | The number of rows in the whole search, from `/api/count`; `null` until it arrives |
 | `pageRows`, `pageMore`, `pageError`, `pageLoaded` | The rows of the page being shown, in the order the board sent them; whether more follow; an error text; and whether the page has arrived |
 | `sortColumn`, `sortDescending` | The column the rows on screen are sorted by (`-1` for none) and the direction |
@@ -242,11 +303,16 @@ Because the address always describes the search, results can be bookmarked and s
 - **`fetchJson(url)`** fetches an address and reads the answer as JSON. The board sends errors as JSON too; if the status says failure but the document has no `error` member, one is added.
 - **`startSearch(newQuery)`** begins a search: it resets the paging state, shows or hides the results area, writes the search into the form fields, and then calls `load()` and `loadTotal()`. The rows are requested first, so they arrive before the count.
 - **`load()`** fetches the current page of rows.
-  - The cursor for the page is added to the request. A row is `[year, state, name, ...]`, so the cursor's name is at index 2, its year at index 0 and its state at index 1.
-  - Both buttons are disabled while the request runs, so a second click cannot start another request.
-  - If the board cannot be reached, or the answer is not valid JSON, the status line reports the failure and "previous" is enabled again so the user is not stuck.
-- **`loadTotal()`** fetches the row count for the search. A failure is ignored: the status line then simply shows no total.
-- **`show(data)`** takes in one answer: it stores the rows, records the cursor and starting count for the next page if more rows follow, then calls `render()` and `showStatus()` and sets the buttons. "previous" is enabled on every page but the first, "next" only if more rows exist.
+  - If the cursor for the page is known, it is added to the request. A row is `[year, state, name, ...]`, so the cursor's name is at index 2, its year at index 0 and its state at index 1.
+  - If it is not known, which happens after a jump, the page is requested by position: `offset` is the page number times `pageSize`.
+  - Everything in both pagers is disabled while the request runs, so a second click cannot start another request.
+  - If the board cannot be reached, or the answer is not valid JSON, the status line reports the failure and "first" and "previous" are enabled again so the user is not stuck.
+- **`loadTotal()`** fetches the row count for the search. A failure is ignored: the status line then simply shows no total, and "last" stays unavailable.
+- **`show(data)`** takes in one answer: it stores the rows, records the page size (on the first page), the cursor and the starting count for the next page if more rows follow, then calls `render()`, `showStatus()` and `showPager()`.
+- **`lastPage()`** works out the number of the last page from the total and the page size, or returns `-1` while either is unknown.
+- **`showPager(back, ready)`** rebuilds both pagers; see [Navigation](#navigation). `back` allows "First" and "Previous", `ready` allows everything else that applies. Both are false while a page loads, and only `back` is true after a failed request.
+- **`addPageItem(list, label, target, enabled, name)`** adds one item to a pager. The current page becomes a highlighted label; every other item becomes a button that carries its target in `data-page`.
+- **`pagerClick(event)`** handles a click anywhere in a pager: it reads the target from the button, sets `page` and calls `load()`.
 - **`showStatus()`** writes the status line: an error if there was one, "No records found" for an empty result, otherwise "Rows 201 to 400 of 1234". Until the total arrives the "of" part is left out, and the last page is marked "(end)".
 - **`compareValues(a, b)`** compares two cell values for sorting: numbers numerically, everything else as text without regard to case.
 - **`render()`** draws the table.
@@ -254,6 +320,22 @@ Because the address always describes the search, results can be bookmarked and s
   - Cells are created through the DOM and filled with `textContent`, so a name containing `<` or `&` is shown as it is.
   - Columns 5 and 6 (ratio and rate per 100k) are shown with exactly two decimals. The board sends them without trailing zeros, so `80.8` arrives and is shown as `80.80`. A type check guards against `null`, which the board sends for a value that cannot be written as a number.
 - **`search(newQuery)`** is what the forms call: it puts the search into the address bar and starts it.
+
+### Navigation
+
+The same pager is shown above and below the table, built from Bootstrap's pagination component. Its items, from left to right:
+
+| Item | Does | Available |
+|---|---|---|
+| First | Goes to the first page | On every page but the first |
+| Previous | Goes back one page | On every page but the first |
+| Page numbers | Go to that page. The current page is highlighted, with up to two pages on either side (`PAGES_AROUND`) | Once the total has arrived; until then only the current page's number is shown |
+| Next | Goes forward one page | When more rows follow |
+| Last | Goes to the last page | When more rows follow and the total has arrived |
+
+Each item only changes `page` and calls `load()`. A page number has a cursor if that page's predecessor was visited; otherwise the page is fetched by position. "next" always has a cursor, saved when the current page arrived. "last" usually has none, so that page is fetched by position, and so is "previous" from there. Pages reached that way record their own cursor for the page after them, so moving forward again uses cursors.
+
+"last" depends on the total because the number of the last page is worked out from it. When the result fits on one page, both pagers are hidden.
 
 ### Sorting
 
@@ -281,9 +363,9 @@ Run these from the project folder.
 
 Both test scripts default to `http://esp32.local`. Passing the board's IP address avoids a name lookup of about a second per request on Windows. Both need only the Python standard library. On this PC, Python is the one that comes with PlatformIO: `%USERPROFILE%\.platformio\penv\Scripts\python.exe`.
 
-**`tools/test_api.py`** fetches every page of a set of ranges and prefixes and compares the rows, and the counts, with the same queries run on `data/babyname.db`. It also checks the error answers, the caching headers, the file listing and download, and that nothing outside the files folder can be fetched. It expects `data/files/read.me` to be on the board. It makes 41 checks.
+**`tools/test_api.py`** fetches every page of a set of ranges and prefixes and compares the rows, and the counts, with the same queries run on `data/babyname.db`. It also checks the error answers, the caching headers, that the stylesheet arrives compressed and unpacks to `web/bootstrap.min.css`, that the database file cannot be fetched by address, and pages requested by position, including the last page of the whole table. It makes 51 checks.
 
-**`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, sorting, searching from both forms without a reload, an empty result, and the back button. It makes 33 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
+**`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display, that the Bootstrap stylesheet is applied, that the crash notice matches what the board reports, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, the first and last buttons, the page numbers and both pagers, sorting, searching from both forms without a reload, an empty result, and the back button. It makes 49 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
 
 Both passed in full against the firmware described here.
 
@@ -312,7 +394,17 @@ This only helps if the monitor was running at the moment of the crash.
 
 ### Afterwards: the saved crash dump
 
-The framework also saves the state of every task to the `coredump` partition before restarting. The dump stays there until the next crash overwrites it, so it can be read later.
+The framework also saves the state of every task to the `coredump` partition before restarting. The dump stays there until it is erased or the next crash overwrites it, so it can be read later.
+
+The board says when a dump is waiting. At startup the firmware checks the partition for a complete dump and reads from it which task crashed and at which address. Three places then show it:
+
+- the serial port, as one line at startup;
+- `/api/status`, as `"crash_dump":true` with `crash_task` and `crash_pc`;
+- the page, as a yellow notice such as "The firmware crashed at some point and saved a crash dump (task loopTask at 0x400d14fb)."
+
+The notice means a crash happened at some point, not that it just happened: it stays until the dump is erased (see the end of this section). `tools/test_api.py` also prints a note when a dump is waiting.
+
+This was tested by loading a test firmware that writes through a null pointer, then the real firmware again. Status and page reported task `loopTask`; after the partition was erased, both went back to reporting nothing.
 
 One-time setup, from the project folder (PowerShell). It installs Espressif's `esp-coredump` tool into a private folder, `.venv`, without touching PlatformIO's own Python:
 
@@ -347,7 +439,7 @@ Things to know:
 - **`0x3F0000` and `0x10000`** are the start and size of the `coredump` partition in `defpart.csv`. If the table changes, these change with it.
 - **Reading the partition restarts the board.**
 - **A partition with no dump in it** makes step 2 stop with `Core dump version "0xffff" is not supported!`. That means there has been no crash since the partition was last erased.
-- **To clear a dump** after reading it: run the first command with `erase_region 0x3F0000 0x10000` in place of `read_flash 0x3F0000 0x10000 coredump.bin`.
+- **To clear a dump** after reading it, which also removes the notice on the page: run the first command with `erase_region 0x3F0000 0x10000` in place of `read_flash 0x3F0000 0x10000 coredump.bin`.
 - The tool can also read the board directly through `--port`, but that mode needs a full ESP-IDF installation, which this project does not use.
 
 ## Measured performance
@@ -370,6 +462,7 @@ Current figures on the board, averaged over 111 full 200-row pages:
 | Whole response per page | about 76 ms |
 | Count of 3,594 rows | about 92 ms |
 | Count of the whole table (25,192 rows) | about 0.7 s |
+| Last page of the whole table, by position | about 0.7 s, measured from the PC |
 
 A page takes the same time whether it is the first or a deep one.
 
@@ -389,13 +482,13 @@ That is a gain of about 2.5% on rows, none on counting, for 122 KB more flash. I
 
 **Access and security**
 
-- There is no login. Anyone on the network can query the database, read the device status and download everything in the `files` folder.
+- There is no login, by design (see [Purpose](#purpose)). Anyone on the network can query the database and read the device status, so the board belongs on a trusted network only.
 - The WiFi password is stored as plain text in `include/Secrets.h`.
 
 **Reliability**
 
 - The fallback access point is only started at boot. If the WiFi network disappears while the board is running, the board relies on the framework reconnecting by itself.
-- The server answers one request at a time. A slow request delays everyone else. The largest single request is the count for a search that matches the whole table, about 0.7 s.
+- The server answers one request at a time. A slow request delays everyone else. The largest single requests are the count for a search that matches the whole table, and a jump to the last page of such a search, about 0.7 s each.
 - Serial uploads were unreliable on this board earlier in development. At times the board did not enter download mode without the BOOT button held, and at other times it stayed in download mode and did not start. All recent uploads worked unattended; the cause was never identified.
 
 **The page**
@@ -406,13 +499,9 @@ That is a gain of about 2.5% on rows, none on counting, for 122 KB more flash. I
 
 **Data**
 
-- The database is read-only on the board. Any change means rebuilding it on a PC and uploading the whole filesystem.
+- The database is read-only on the board, by design (see [Purpose](#purpose)). Any change means rebuilding it on a PC and uploading the whole filesystem.
 - Case is ignored only for the letters A to Z. Accented and non-Latin letters are matched exactly.
 - The two decimal columns are rounded to two places. The current data has no value with more.
-
-**Files**
-
-- Subfolders of `files` are not listed, and only a fixed list of file types gets a specific content type.
 
 **Network**
 
@@ -421,23 +510,20 @@ That is a gain of about 2.5% on rows, none on counting, for 122 KB more flash. I
 **Housekeeping**
 
 - Query timing is printed to the serial port for every request (`LOG_QUERY_TIMING` is on).
-- Reading a crash dump is a manual procedure, and the board gives no sign that a dump is waiting.
+- Reading a crash dump is a manual procedure. The board reports that a dump is waiting, but the dump can only be read and erased over the serial cable.
 
 ## Suggested improvements
 
 In rough order of value.
 
 1. **Give the board a fixed address.** Either fill in `STATIC_IP` and `STATIC_GATEWAY` in `include/Definitions.h` or reserve the address on the router. This avoids the name lookup and the changing address.
-2. **Decide what the project is for.** Several larger choices depend on it:
-   - If the board should change its own data (edit records, log values, accept input), the database must be opened for writing, power-loss safety starts to matter, and the caching rules change.
-   - If it will be reachable by people you do not trust, it needs a login again and should not be exposed without encryption.
-   - If it stays a read-only demonstration, the current design is sufficient.
-3. **Sort the whole result on the board.** Sorting by another column across all pages would need the board to order the range itself, and paging by a different key. It is only worth doing if sorting the visible page proves too limited.
-4. **Report a waiting crash dump.** The firmware could check the `coredump` partition at startup and say in `/api/status`, and on the page, that a crash was recorded.
-5. **Turn the timing log off** when it is no longer needed, or enable it only in the Debug build.
-6. **Handle a lost WiFi connection at run time**, falling back to the access point after a period without the network.
-7. **Compress the page.** Embedding a gzip-compressed copy would cut the 7 KB transfer by more than half. The gain is small because the page is cached.
-8. **Run the tests automatically.** Both test scripts need a board on the network; a single command that uploads, waits for the board and runs both would make that routine.
-9. **Reconsider updates over WiFi.** They were added and removed during development because they need two firmware slots, which leaves about 1.1 MB for the filesystem. They would remove the dependence on the serial upload.
+2. **Sort the whole result on the board.** Sorting by another column across all pages would need the board to order the range itself, and paging by a different key. It is only worth doing if sorting the visible page proves too limited.
+3. **Turn the timing log off** when it is no longer needed, or enable it only in the Debug build.
+4. **Handle a lost WiFi connection at run time**, falling back to the access point after a period without the network.
+5. **Compress the page.** Embedding a gzip-compressed copy would cut the 9 KB transfer by more than half. The gain is small because the page is cached.
+6. **Run the tests automatically.** Both test scripts need a board on the network; a single command that uploads, waits for the board and runs both would make that routine.
+7. **Reconsider updates over WiFi.** They were added and removed during development because they need two firmware slots, which leaves about 1.1 MB for the filesystem. They would remove the dependence on the serial upload.
 
-Done since the first version of this document: version control, a content-based cache label for the page, no automatic formatting of the filesystem, an automated browser test, a row total, searching without a reload, column sorting, the `-O2` measurement, and the crash-dump procedure.
+Not on this list, because the project is a read-only demonstration: writing to the database from the board, a login, and encryption. See [Purpose](#purpose).
+
+Done since the first version of this document: version control, a content-based cache label for the page, no automatic formatting of the filesystem, an automated browser test, a row total, searching without a reload, column sorting, first and last buttons, removal of the file listing, the Bootstrap stylesheet and pagination, the crash-dump notice, the `-O2` measurement, and the crash-dump procedure.

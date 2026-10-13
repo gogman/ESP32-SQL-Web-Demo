@@ -42,6 +42,19 @@ static const char PAGE_SQL[] =
     "order by name, year, state limit ?6";
 
 /*
+ * The query behind getPageAt(): a page found by its position in the range
+ * instead of by a cursor. "limit ?3 offset ?4" makes SQLite read and discard
+ * the first ?4 rows of the range and then return up to ?3. Discarding is
+ * cheap per row but not free, so the further into the range the page lies,
+ * the longer this takes; PAGE_SQL does not have that cost.
+ */
+static const char OFFSET_SQL[] =
+    "Select year, state, name, total_babies, primary_sex, primary_sex_ratio, per_100k_in_state "
+    "from gendered_names "
+    "where name between ?1 and ?2 "
+    "order by name, year, state limit ?3 offset ?4";
+
+/*
  * The query behind getCount(): how many rows a range of names holds. It uses
  * the same "between" as PAGE_SQL, so it counts exactly the rows that paging
  * through the range would return.
@@ -420,9 +433,9 @@ bool db_mgr::open(const char *filename, int cacheKiB)
     }
 
     /*
-     * Compile both queries now, once. Parsing and planning SQL is expensive
-     * compared with running these queries; afterwards each request only
-     * binds new values and steps through rows.
+     * Compile the three queries now, once. Parsing and planning SQL is
+     * expensive compared with running these queries; afterwards each request
+     * only binds new values and steps through rows.
      *
      * sizeof(PAGE_SQL) passes the length including the terminating zero,
      * which lets SQLite skip measuring the string. SQLITE_PREPARE_PERSISTENT
@@ -433,6 +446,7 @@ bool db_mgr::open(const char *filename, int cacheKiB)
      * expected table, which is how a wrong or empty file is detected.
      */
     if (sqlite3_prepare_v3(db, PAGE_SQL, sizeof(PAGE_SQL), SQLITE_PREPARE_PERSISTENT, &pageStmt, nullptr) != SQLITE_OK ||
+        sqlite3_prepare_v3(db, OFFSET_SQL, sizeof(OFFSET_SQL), SQLITE_PREPARE_PERSISTENT, &offsetStmt, nullptr) != SQLITE_OK ||
         sqlite3_prepare_v3(db, COUNT_SQL, sizeof(COUNT_SQL), SQLITE_PREPARE_PERSISTENT, &countStmt, nullptr) != SQLITE_OK)
     {
         setErrorFromDb();
@@ -452,9 +466,11 @@ bool db_mgr::open(const char *filename, int cacheKiB)
 void db_mgr::close()
 {
     sqlite3_finalize(pageStmt);
+    sqlite3_finalize(offsetStmt);
     sqlite3_finalize(countStmt);
     sqlite3_close(db);
     pageStmt = nullptr;
+    offsetStmt = nullptr;
     countStmt = nullptr;
     db = nullptr;
 }
@@ -529,17 +545,38 @@ bool db_mgr::bindPage(const char *from, const char *to, const Cursor *after, int
     return true;
 }
 
-bool db_mgr::writeRows(ChunkWriter &out, const char *from, const char *to, const Cursor *after, int limit, bool &more)
+/*
+ * Fills in the four placeholders of OFFSET_SQL: the two bounds of the range,
+ * the row limit (again one more than will be shown, see bindPage()), and the
+ * number of rows to skip.
+ */
+bool db_mgr::bindOffsetPage(const char *from, const char *to, long offset, int limit)
 {
-    /*
-     * From here on, however this function is left, the statement is reset
-     * and its bindings are cleared (see StmtReset).
-     */
-    StmtReset reset{pageStmt};
-
-    if (!bindPage(from, to, after, limit))
+    if (!db)
+    {
+        setError("Database is not open");
         return false;
+    }
 
+    if (sqlite3_bind_text(offsetStmt, 1, from, -1, SQLITE_STATIC) != SQLITE_OK ||
+        sqlite3_bind_text(offsetStmt, 2, to, -1, SQLITE_STATIC) != SQLITE_OK ||
+        sqlite3_bind_int(offsetStmt, 3, limit + 1) != SQLITE_OK ||
+        sqlite3_bind_int64(offsetStmt, 4, offset) != SQLITE_OK)
+    {
+        setErrorFromDb();
+        return false;
+    }
+
+    return true;
+}
+
+/*
+ * Steps through a statement whose parameters are already bound and writes
+ * its rows, separated by commas. Both page queries return the same columns,
+ * so this works for either.
+ */
+bool db_mgr::writeRows(ChunkWriter &out, sqlite3_stmt *stmt, int limit, bool &more)
+{
     int count = 0;
     int result_code;
 
@@ -547,7 +584,7 @@ bool db_mgr::writeRows(ChunkWriter &out, const char *from, const char *to, const
      * Each sqlite3_step() advances to the next row and returns SQLITE_ROW,
      * or returns SQLITE_DONE when there are no more rows, or an error code.
      */
-    while ((result_code = sqlite3_step(pageStmt)) == SQLITE_ROW)
+    while ((result_code = sqlite3_step(stmt)) == SQLITE_ROW)
     {
         /*
          * The query was asked for limit + 1 rows. Reaching that extra row
@@ -564,7 +601,7 @@ bool db_mgr::writeRows(ChunkWriter &out, const char *from, const char *to, const
         if (count++ > 0)
             out.put(',');
 
-        writeRow(out, pageStmt);
+        writeRow(out, stmt);
     }
 
     /* The loop ended without SQLITE_DONE, so the last step failed. */
@@ -606,7 +643,15 @@ long db_mgr::getCount(const char *from, const char *to)
     return (long)sqlite3_column_int64(countStmt, 0);
 }
 
-bool db_mgr::getPage(const char *from, const char *to, const Cursor *after, int limit, const ChunkSink &emit)
+/*
+ * Writes the whole JSON document for one page: the opening, the rows of the
+ * given statement, the "more" flag and, if something went wrong, the error.
+ *
+ * bound says whether binding the statement's parameters succeeded. It is
+ * passed in, rather than checked by the caller, so that a binding failure
+ * takes exactly the same path as a failure while reading rows.
+ */
+bool db_mgr::writePage(sqlite3_stmt *stmt, bool bound, int limit, const ChunkSink &emit)
 {
     ChunkWriter out(chunk, CHUNK_SIZE, emit);
     bool more = false;
@@ -614,8 +659,7 @@ bool db_mgr::getPage(const char *from, const char *to, const Cursor *after, int 
     /* The opening of the document. It only goes into the buffer; nothing is emitted yet. */
     out.put("{\"rows\":[");
 
-    /* A limit below 1 would return nothing and could never make progress, so 1 is the minimum. */
-    bool ok = writeRows(out, from, to, after, max(limit, 1), more);
+    bool ok = bound && writeRows(out, stmt, limit, more);
 
     /*
      * A failure before anything was emitted (database not open, a bad
@@ -648,4 +692,28 @@ bool db_mgr::getPage(const char *from, const char *to, const Cursor *after, int 
     out.flush();
 
     return ok;
+}
+
+bool db_mgr::getPage(const char *from, const char *to, const Cursor *after, int limit, const ChunkSink &emit)
+{
+    /* A limit below 1 would return nothing and could never make progress, so 1 is the minimum. */
+    limit = max(limit, 1);
+
+    /*
+     * From here on, however this function is left, the statement is reset
+     * and its bindings are cleared (see StmtReset).
+     */
+    StmtReset reset{pageStmt};
+
+    return writePage(pageStmt, bindPage(from, to, after, limit), limit, emit);
+}
+
+bool db_mgr::getPageAt(const char *from, const char *to, long offset, int limit, const ChunkSink &emit)
+{
+    limit = max(limit, 1);
+
+    StmtReset reset{offsetStmt};
+
+    /* A negative position makes no sense; treat it as the start of the range. */
+    return writePage(offsetStmt, bindOffsetPage(from, to, max(offset, 0L), limit), limit, emit);
 }
