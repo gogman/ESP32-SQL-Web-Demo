@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset='utf-8'>
+<title>ESP32 Sqlite local database query through web server</title>
+<style>
+body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; font-size: large; color: #000088; }
+input { font-size: large; }
+thead td { cursor: pointer; user-select: none; }
+#problem { color: #aa0000; font-weight: bold; }
+</style>
+</head>
+<body>
+<h1>ESP32 Sqlite local database query through web server</h1>
+<p>Uptime: <span id='uptime'>...</span></p>
+<p id='problem' hidden></p>
+
+<h2>Query gendered names database</h2>
+<form method='GET' action='/' id='prefixForm'>
+Names starting with: <input type=text name='prefix' id='prefix'/>
+<input type=submit value='Search'/>
+</form>
+<form method='GET' action='/' id='rangeForm'>
+Names from: <input type=text name='from' id='from' value='Bob'/>
+to: <input type=text name='to' id='to' value='Bobby'/>
+<input type=submit value='Query database'/>
+</form>
+<p><a href='/files/'>Files</a></p>
+
+<div id='results' hidden>
+<p id='status'></p>
+<table id='table' cellspacing='1' cellpadding='1' border='1' hidden>
+<thead id='head' title='Click a column to sort the rows shown'><tr><td>Year</td><td>State</td><td>Name</td><td>Total babies</td><td>Primary Sex</td><td>Ratio</td><td>Per 100k</td></tr></thead>
+<tbody id='rows'></tbody>
+</table>
+<p>
+<input type=button id='previous' value='previous' disabled/>
+<input type=button id='next' value='next' disabled/>
+</p>
+</div>
+
+<script>
+var COLUMNS = ['Year', 'State', 'Name', 'Total babies', 'Primary Sex', 'Ratio', 'Per 100k'];
+
+var query = null;
+var searchId = 0;
+var cursors = [null], starts = [0], page = 0;
+var total = null;
+var pageRows = [], pageMore = false, pageError = '', pageLoaded = false;
+var sortColumn = -1, sortDescending = false;
+var dbVersion = '';
+
+function element(id) { return document.getElementById(id); }
+
+function setStatus(text) { element('status').textContent = text; }
+
+function twoDigits(number) { return (number < 10 ? '0' : '') + number; }
+
+function showUptime(seconds) {
+  var minutes = Math.floor(seconds / 60), hours = Math.floor(minutes / 60);
+  element('uptime').textContent = hours + ':' + twoDigits(minutes % 60) + ':' + twoDigits(seconds % 60);
+}
+
+function showProblem(text) {
+  element('problem').textContent = text;
+  element('problem').hidden = !text;
+}
+
+function readAddress() {
+  var address = new URLSearchParams(location.search);
+  if (address.has('prefix')) return { prefix: address.get('prefix') };
+  if (address.has('from') || address.has('to')) return { from: address.get('from') || '', to: address.get('to') || '' };
+  return null;
+}
+
+function requestParams() {
+  var request = new URLSearchParams(query);
+  if (dbVersion) request.set('v', dbVersion);
+  return request;
+}
+
+function fetchJson(url) {
+  return fetch(url).then(function (response) {
+    return response.json().then(function (data) {
+      if (!response.ok && !data.error) data.error = 'HTTP ' + response.status;
+      return data;
+    });
+  });
+}
+
+function startSearch(newQuery) {
+  query = newQuery;
+  searchId++;
+  cursors = [null];
+  starts = [0];
+  page = 0;
+  total = null;
+  element('results').hidden = !query;
+  if (!query) return;
+
+  if ('prefix' in query) {
+    element('prefix').value = query.prefix;
+  } else {
+    element('from').value = query.from;
+    element('to').value = query.to;
+  }
+
+  load();
+  loadTotal();
+}
+
+function load() {
+  var id = searchId;
+  var request = requestParams();
+  var after = cursors[page];
+  if (after) {
+    request.set('after_name', after[2]);
+    request.set('after_year', after[0]);
+    request.set('after_state', after[1]);
+  }
+
+  element('previous').disabled = element('next').disabled = true;
+  pageLoaded = false;
+  setStatus('Loading...');
+
+  fetchJson('/api/names?' + request)
+    .then(function (data) { if (id == searchId) show(data); })
+    .catch(function (error) {
+      if (id != searchId) return;
+      setStatus('Failed to fetch data: ' + error.message);
+      element('previous').disabled = page == 0;
+    });
+}
+
+function loadTotal() {
+  var id = searchId;
+  fetchJson('/api/count?' + requestParams())
+    .then(function (data) {
+      if (id != searchId || typeof data.count != 'number') return;
+      total = data.count;
+      if (pageLoaded) showStatus();
+    })
+    .catch(function () {});
+}
+
+function show(data) {
+  pageRows = data.rows || [];
+  pageMore = !!data.more;
+  pageError = data.error || '';
+  pageLoaded = true;
+
+  if (pageMore) {
+    cursors[page + 1] = pageRows[pageRows.length - 1];
+    starts[page + 1] = starts[page] + pageRows.length;
+  }
+
+  render();
+  showStatus();
+  element('previous').disabled = page == 0;
+  element('next').disabled = !pageMore;
+}
+
+function showStatus() {
+  if (pageError) setStatus('Failed to fetch data: ' + pageError);
+  else if (pageRows.length == 0) setStatus('No records found');
+  else setStatus('Rows ' + (starts[page] + 1) + ' to ' + (starts[page] + pageRows.length) +
+                 (total != null ? ' of ' + total : (pageMore ? '' : ' (end)')));
+}
+
+function compareValues(a, b) {
+  if (typeof a == 'number' && typeof b == 'number') return a - b;
+  return String(a).localeCompare(String(b), undefined, { sensitivity: 'base' });
+}
+
+function render() {
+  var rows = pageRows.slice(), body = element('rows');
+
+  if (sortColumn >= 0) {
+    rows.sort(function (a, b) {
+      var order = compareValues(a[sortColumn], b[sortColumn]);
+      return sortDescending ? -order : order;
+    });
+  }
+
+  var cells = element('head').rows[0].cells;
+  for (var i = 0; i < cells.length; i++) {
+    cells[i].textContent = COLUMNS[i] + (i == sortColumn ? (sortDescending ? ' ▼' : ' ▲') : '');
+  }
+
+  body.textContent = '';
+  rows.forEach(function (row) {
+    var line = body.insertRow();
+    row.forEach(function (value, column) {
+      line.insertCell().textContent = column > 4 && typeof value == 'number' ? value.toFixed(2) : value;
+    });
+  });
+  element('table').hidden = rows.length == 0;
+}
+
+function search(newQuery) {
+  history.pushState(null, '', '/?' + new URLSearchParams(newQuery));
+  startSearch(newQuery);
+}
+
+element('prefixForm').onsubmit = function (event) {
+  event.preventDefault();
+  search({ prefix: element('prefix').value });
+};
+
+element('rangeForm').onsubmit = function (event) {
+  event.preventDefault();
+  search({ from: element('from').value, to: element('to').value });
+};
+
+window.onpopstate = function () { startSearch(readAddress()); };
+
+element('previous').onclick = function () { page--; load(); };
+element('next').onclick = function () { page++; load(); };
+
+element('head').onclick = function (event) {
+  var cell = event.target.closest('td');
+  if (!cell) return;
+  if (sortColumn != cell.cellIndex) {
+    sortColumn = cell.cellIndex;
+    sortDescending = false;
+  } else if (!sortDescending) {
+    sortDescending = true;
+  } else {
+    sortColumn = -1;
+    sortDescending = false;
+  }
+  render();
+};
+
+fetchJson('/api/status')
+  .then(function (status) {
+    showUptime(status.uptime);
+    dbVersion = status.db_version || '';
+    if (status.fs_mounted === false) {
+      showProblem('The filesystem could not be mounted. Upload the filesystem image to the board.');
+    } else if (status.db_open === false) {
+      showProblem('The database could not be opened' + (status.db_error ? ': ' + status.db_error : '.'));
+    }
+  })
+  .catch(function () { element('uptime').textContent = 'unknown'; })
+  .then(function () { startSearch(readAddress()); });
+</script>
+</body>
+</html>
