@@ -36,7 +36,16 @@ static const unsigned long WIFI_CONNECT_TIMEOUT_MS = 20000;
  * AP_PASSWORD in Secrets.h. When connected to it, the application is at
  * http://192.168.4.1.
  */
-static const char AP_SSID[] = "esp32-sqlite";
+static const char AP_SSID[] = "ESP32-SQLite-Demo";
+
+/*
+ * How long the WiFi connection may stay lost while the board is running,
+ * in milliseconds, before the board gives up on it and starts the fallback
+ * access point. Short drops are common and the framework reconnects by
+ * itself within seconds, so only a lasting loss counts. 60000 ms is one
+ * minute.
+ */
+static const unsigned long WIFI_LOST_TIMEOUT_MS = 60000;
 
 /*
  * While the fallback access point is running and nobody is connected to it,

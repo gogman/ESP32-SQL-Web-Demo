@@ -76,7 +76,7 @@ Changing this table moves the partitions. Afterwards both the firmware and the f
 `setup()` in `src/main.cpp` brings the board up in this order:
 
 1. **LED and serial port.** The serial port is started in the Debug build only, at 115200 baud, so later steps can report progress; the Release build prints nothing of its own (see [Serial output](#serial-output)).
-2. **WiFi.** The board tries the network from `Secrets.h` for up to 20 seconds. If that fails it starts its own access point named `esp32-sqlite`, where the application is reachable at `192.168.4.1`.
+2. **WiFi.** The board tries the network from `Secrets.h` for up to 20 seconds. If that fails it starts its own access point named `ESP32-SQLite-Demo` (password `AP_PASSWORD` in `Secrets.h`), where the application is reachable at `192.168.4.1`.
 3. **Filesystem.** LittleFS is mounted. It is never formatted by the firmware. If it cannot be mounted, the board says so on the page and in `/api/status` (and on the serial port in the Debug build), and carries on without it.
 4. **Database.** `babyname.db` is opened read-only. With PSRAM present, SQLite gets a 1024 KiB page cache, which is larger than the whole database. If opening fails, the server still starts and every query answers with the error.
 5. **Name on the network.** The board announces itself as `esp32.local`.
@@ -84,7 +84,12 @@ Changing this table moves the partitions. Afterwards both the firmware and the f
 
 `loop()` then repeats three things: serve one waiting request, do network housekeeping, and sleep for a millisecond so the processor is not kept busy doing nothing.
 
-Network housekeeping only matters in access-point mode: every five minutes the board restarts to try the WiFi network again, unless somebody is connected to the access point.
+Network housekeeping (`handleNetwork()`) has two jobs, depending on the mode:
+
+- **On the WiFi network**, it watches the connection. When it drops, the ESP32 tries to reconnect by itself, and a short drop is over within seconds. If the connection is still lost after one minute (`WIFI_LOST_TIMEOUT_MS`), the board gives up on the network and starts the fallback access point, just as at startup. Because the web server listens on every interface, it carries on unchanged at `192.168.4.1`.
+- **In access-point mode**, every five minutes (`AP_RETRY_MS`) the board restarts to try the WiFi network again, unless somebody is connected to the access point.
+
+So after a lasting loss of the network, the board is reachable through its access point after a minute, and back on the network within about five minutes of the network returning.
 
 ### When the filesystem is missing
 
@@ -597,7 +602,6 @@ That is a gain of about 2.5% on rows, none on counting, for 122 KB more flash. I
 
 **Reliability**
 
-- The fallback access point is only started at boot. If the WiFi network disappears while the board is running, the board relies on the framework reconnecting by itself.
 - The server answers one request at a time. A slow request delays everyone else. The largest single request is the first sorted page of a search that matches the whole table, about 3 s. The count for such a search, and a jump to its last page in name order, take about 0.7 s each.
 - Serial uploads were unreliable on this board earlier in development. At times the board did not enter download mode without the BOOT button held, and at other times it stayed in download mode and did not start. All recent uploads worked unattended; the cause was never identified.
 
@@ -627,9 +631,8 @@ That is a gain of about 2.5% on rows, none on counting, for 122 KB more flash. I
 In rough order of value.
 
 1. **Give the board a fixed address.** Either fill in `STATIC_IP` and `STATIC_GATEWAY` in `include/Definitions.h` or reserve the address on the router. This avoids the name lookup and the changing address.
-2. **Handle a lost WiFi connection at run time**, falling back to the access point after a period without the network.
-3. **Reconsider updates over WiFi.** They were added and removed during development because they need two firmware slots, which leaves about 1.1 MB for the filesystem. They would remove the dependence on the serial upload.
+2. **Reconsider updates over WiFi.** They were added and removed during development because they need two firmware slots, which leaves about 1.1 MB for the filesystem. They would remove the dependence on the serial upload.
 
 Not on this list, because the project is a read-only demonstration: writing to the database from the board, a login, and encryption. See [Purpose](#purpose).
 
-Done since the first version of this document: version control, a content-based cache label for the page, no automatic formatting of the filesystem, an automated browser test, a row total, searching without a reload, column sorting (now of the whole search, on the board), first and last buttons, removal of the file listing, the Bootstrap stylesheet and pagination, the crash-dump notice, the compressed page, a one-command test run, serial output in the Debug build only, the `-O2` measurement, and the crash-dump procedure.
+Done since the first version of this document: version control, a content-based cache label for the page, no automatic formatting of the filesystem, an automated browser test, a row total, searching without a reload, column sorting (now of the whole search, on the board), first and last buttons, removal of the file listing, the Bootstrap stylesheet and pagination, the crash-dump notice, the compressed page, a one-command test run, serial output in the Debug build only, the access point after a lost connection, the `-O2` measurement, and the crash-dump procedure.

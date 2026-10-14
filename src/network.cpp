@@ -22,6 +22,13 @@
 static unsigned long accessPointSince = 0;
 
 /*
+ * The millis() timestamp at which the WiFi connection was found lost while
+ * the board was running, or 0 while it is connected (or the access point is
+ * running). Like accessPointSince, a real timestamp is never stored as 0.
+ */
+static unsigned long connectionLostSince = 0;
+
+/*
  * Applies the fixed IP address from Definitions.h, if one is configured.
  *
  * Must be called before WiFi.begin(). When STATIC_IP is empty (the default)
@@ -162,21 +169,52 @@ void announceWebServer()
 }
 
 /*
- * Periodic network housekeeping; call it from loop().
+ * Watches the WiFi connection while the board is on the network.
  *
- * On the WiFi network there is nothing to do: the ESP32 reconnects by
- * itself after a dropped connection. The work here is for the fallback
- * case. An access point is only a stopgap, so every AP_RETRY_MS the board
+ * When the connection drops, the ESP32 tries to reconnect by itself, and a
+ * short drop is over within seconds. Only if the connection stays lost for
+ * WIFI_LOST_TIMEOUT_MS does the board give up on the network and start the
+ * fallback access point, exactly as it would have at startup. From then on
+ * handleAccessPoint() takes over, including the regular attempts to get
+ * back onto the network.
+ */
+static void watchConnection()
+{
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    if (connectionLostSince != 0)
+    {
+      LOG_PRINTLN("WiFi connection is back");
+      connectionLostSince = 0;
+    }
+    return;
+  }
+
+  if (connectionLostSince == 0)
+  {
+    /* Just noticed; never 0, see connectionLostSince. */
+    connectionLostSince = max(millis(), 1UL);
+    LOG_PRINTLN("WiFi connection lost, waiting for it to come back");
+    return;
+  }
+
+  if (millis() - connectionLostSince >= WIFI_LOST_TIMEOUT_MS)
+  {
+    connectionLostSince = 0;
+    startAccessPoint();
+  }
+}
+
+/*
+ * While the fallback access point is running.
+ *
+ * An access point is only a stopgap, so every AP_RETRY_MS the board
  * restarts to try the real network again - but only if nobody is using the
  * access point at that moment, so a person working through it is not cut off.
  */
-void handleNetwork()
+static void handleAccessPoint()
 {
-  /*
-   * accessPointSince is 0 while on the WiFi network, which makes the whole
-   * block a no-op in the normal case.
-   */
-  if (accessPointSince != 0 && millis() - accessPointSince >= AP_RETRY_MS)
+  if (millis() - accessPointSince >= AP_RETRY_MS)
   {
     if (WiFi.softAPgetStationNum() == 0)
     {
@@ -194,4 +232,16 @@ void handleNetwork()
      */
     accessPointSince = max(millis(), 1UL);
   }
+}
+
+/*
+ * Periodic network housekeeping; call it from loop(). accessPointSince is 0
+ * while on the WiFi network, so it tells which of the two jobs applies.
+ */
+void handleNetwork()
+{
+  if (accessPointSince == 0)
+    watchConnection();
+  else
+    handleAccessPoint();
 }

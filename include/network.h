@@ -27,9 +27,11 @@ void announceWebServer();
 /*
  * Network housekeeping. Call it on every pass of loop().
  *
- * While the fallback access point is running, it restarts the board every
- * AP_RETRY_MS to try the WiFi network again, unless somebody is connected
- * to the access point. On the WiFi network it does nothing.
+ * On the WiFi network, it watches the connection: if it stays lost for
+ * WIFI_LOST_TIMEOUT_MS, the board starts its fallback access point. While
+ * the access point is running, it restarts the board every AP_RETRY_MS to
+ * try the WiFi network again, unless somebody is connected to the access
+ * point.
  */
 void handleNetwork();
 
