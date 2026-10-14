@@ -355,8 +355,23 @@ def main():
         # --- The page without a search ------------------------------------------
         print("\nOpening the page")
         browser.open(base + "/")
-        check(browser.wait_for("/^\\d+:\\d\\d:\\d\\d$/.test(document.getElementById('uptime').textContent)"),
-              "the uptime is shown as hours:minutes:seconds")
+        UPTIME = "document.getElementById('uptime').textContent"
+        check(browser.wait_for("/^\\d+d \\d+:\\d\\d:\\d\\d$/.test(%s)" % UPTIME),
+              "the uptime is shown as days, hours:minutes:seconds (%s)" % browser.run(UPTIME))
+
+        # It counts on by itself, once a second, without asking the board again.
+        def uptime_seconds():
+            days, clock = browser.run(UPTIME).split("d ")
+            hours, minutes, seconds = clock.split(":")
+            return ((int(days) * 24 + int(hours)) * 60 + int(minutes)) * 60 + int(seconds)
+
+        before = uptime_seconds()
+        time.sleep(3.2)
+        after = uptime_seconds()
+        check(after - before in (3, 4), "it counts on by itself: 3.2 s later it shows %d s more" % (after - before))
+        check([browser.run("formatUptime(%d)" % s) for s in (0, 59, 3725, 86399, 90061, 1000000)]
+              == ["0d 0:00:00", "0d 0:00:59", "0d 1:02:05", "0d 23:59:59", "1d 1:01:01", "11d 13:46:40"],
+              "days, hours, minutes and seconds are worked out correctly, e.g. 90061 s as 1d 1:01:01")
 
         # Bootstrap defines a set of colour variables on the document. If one
         # of them has a value, the browser fetched the stylesheet from the

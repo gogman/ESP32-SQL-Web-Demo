@@ -108,9 +108,18 @@ function setStatus(text) { element('status').textContent = text; }
 
 function twoDigits(number) { return (number < 10 ? '0' : '') + number; }
 
-function showUptime(seconds) {
+function formatUptime(seconds) {
   var minutes = Math.floor(seconds / 60), hours = Math.floor(minutes / 60);
-  element('uptime').textContent = hours + ':' + twoDigits(minutes % 60) + ':' + twoDigits(seconds % 60);
+  return Math.floor(hours / 24) + 'd ' + hours % 24 + ':' + twoDigits(minutes % 60) + ':' + twoDigits(seconds % 60);
+}
+
+function startUptime(seconds) {
+  var started = performance.now() - seconds * 1000;
+  function tick() {
+    element('uptime').textContent = formatUptime(Math.floor((performance.now() - started) / 1000));
+  }
+  tick();
+  setInterval(tick, 1000);
 }
 
 function showProblem(text) {
@@ -373,7 +382,7 @@ element('head').onclick = function (event) {
 
 fetchJson('/api/status')
   .then(function (status) {
-    showUptime(status.uptime);
+    startUptime(status.uptime);
     dbVersion = status.db_version || '';
     if (status.crash_dump) {
       element('crash').textContent = 'The firmware crashed at some point and saved a crash dump' +
