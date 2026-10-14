@@ -228,12 +228,12 @@ def main():
     status, _, body, ms = request(base, "/api/names?" + urllib.parse.urlencode({"prefix": "", "sex": "f", "sort": 3, "desc": 1, "limit": 50, "offset": 100}))
     check(json.loads(body).get("rows") == want[100:150], "the whole table, female only (sex=f), sorted by total, 50 rows from position 100, %.0f ms" % ms)
 
-    # Without "limit" the board sends 50 rows (DB_DEFAULT_ROWS), the same
+    # Without "limit" the board sends 25 rows (DB_DEFAULT_ROWS), the same
     # number the page starts with.
     want = [list(row) for row in database.execute(RANGE_SQL, ("S", "T"))]
     status, _, body, _ = request(base, "/api/names?" + urllib.parse.urlencode({"from": "S", "to": "T"}))
     data = json.loads(body)
-    check(status == 200 and data.get("rows") == want[:50] and data.get("more") is True, "without limit: %d rows (default 50)" % len(data.get("rows", [])))
+    check(status == 200 and data.get("rows") == want[:25] and data.get("more") is True, "without limit: %d rows (default 25)" % len(data.get("rows", [])))
 
     for name, value in (("sex", "X"), ("sex", "male"), ("limit", "0"), ("limit", "201"), ("limit", "ten")):
         status, _, body, _ = request(base, "/api/names?" + urllib.parse.urlencode({"from": "Bob", "to": "Bobby", name: value}))

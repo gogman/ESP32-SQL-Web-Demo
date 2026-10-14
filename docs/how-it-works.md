@@ -1,6 +1,6 @@
 # SQLite_Web: how it works
 
-SQLite_Web is firmware for an ESP32 board that serves a small web application. The application searches a SQLite database of baby names stored on the board's own flash memory and shows the results in a browser, 50 rows at a time by default.
+SQLite_Web is firmware for an ESP32 board that serves a small web application. The application searches a SQLite database of baby names stored on the board's own flash memory and shows the results in a browser, 25 rows at a time by default.
 
 This document describes how the program is put together, how the web page works, how to build, test and diagnose it, what is known to be wrong or fragile, and what could be improved next. It reflects the state of the project on 13 October 2026.
 
@@ -123,7 +123,7 @@ All addresses accept `GET` only.
 | `sort` | Optional. The column to sort the whole range by, as its position in a row: `0` year, `1` state, `2` name, `3` total babies, `4` primary sex, `5` ratio, `6` per 100k. Pages of a sorted range are found by `offset`; a cursor is ignored. Anything but `0` to `6` is answered 400 |
 | `desc` | Optional, with `sort`. `1` puts the largest first |
 | `sex` | Optional. `M` or `F` (either case) keeps only rows with that primary sex; left out or empty, all rows. Anything else is answered 400 |
-| `limit` | Optional. Rows per page, 1 to 200 (`DB_PAGE_ROWS`); 50 (`DB_DEFAULT_ROWS`) when left out. Anything else is answered 400. The page asks for 10, 25, 50, 100 or 200 |
+| `limit` | Optional. Rows per page, 1 to 200 (`DB_PAGE_ROWS`); 25 (`DB_DEFAULT_ROWS`) when left out. Anything else is answered 400. The page asks for 10, 25, 50, 100 or 200 |
 | `v` | Optional. The database version from `/api/status`. Its presence makes the answer cacheable |
 
 The answer has this form:
@@ -341,7 +341,7 @@ Two things to keep in mind when changing the markup:
 | `page` | The number of the page being shown, counting from 0 |
 | `cursors` | `cursors[i]` is the row that produces page `i`; `null` for page 0. Keeping all of them is what makes "previous" possible: going back is asking again with an earlier cursor |
 | `starts` | `starts[i]` is how many rows come before page `i`, used for the "Rows 201 to 400" text and as the position when a page is requested without a cursor |
-| `perPage` | Rows per page: 10, 25, 50, 100 or 200. 50 whenever the page is opened, then the user's choice until the page is closed or reloaded |
+| `perPage` | Rows per page: 10, 25, 50, 100 or 200. 25 whenever the page is opened, then the user's choice until the page is closed or reloaded |
 | `sexFilter` | The primary sex filter: `''`, `'M'` or `'F'`. Not remembered across visits |
 | `total` | The number of rows in the whole search, from `/api/count`; `null` until it arrives |
 | `pageRows`, `pageMore`, `pageError`, `pageLoaded` | The rows of the page being shown, in the order the board sent them; whether more follow; an error text; and whether the page has arrived |
@@ -419,7 +419,7 @@ It is hidden with `visibility: hidden` and `opacity: 0`, and shown by adding the
 
 ### Rows per page and the primary sex filter
 
-The two "Rows per page" lists, above and below the table, always show the same value; changing either one changes both. The choice starts the search again from its first page. It is not remembered: the page always opens at 50, the same default the board uses for a request without `limit`.
+The two "Rows per page" lists, above and below the table, always show the same value; changing either one changes both. The choice starts the search again from its first page. It is not remembered: the page always opens at 25, the same default the board uses for a request without `limit`.
 
 The primary sex list in the search card keeps only male or only female rows, or all. Changing it starts the current search again; the choice then stays for the following searches, like the sort order. Both values go into every request as `limit` and `sex`, and the filter into the count as well, so the status line and the pager count only the rows that are shown.
 
@@ -474,9 +474,9 @@ The board's address comes from the environment variable `BOARD_URL`, default `ht
 
 A full run takes about a minute and a half: 30 to 40 s to build and upload, under 10 s for the board to restart, and about 25 s for each test.
 
-**`tools/test_api.py`** fetches every page of a set of ranges and prefixes and compares the rows, and the counts, with the same queries run on `data/babyname.db`. It also checks the error answers, the caching headers, that the page arrives compressed and unpacks to `web/index.html`, that the icon arrives unchanged, that the stylesheet arrives compressed and unpacks to `web/bootstrap.min.css`, that the database file cannot be fetched by address, pages requested by position, including the last page of the whole table, that a request without `limit` gets 50 rows, every combination of 25 or 200 rows per page with no filter, male and female on two ranges, invalid values for both, and sorted pages: three ranges by every column in both directions, and the whole table, each compared with the same sort done by SQLite on the PC. It makes 86 checks.
+**`tools/test_api.py`** fetches every page of a set of ranges and prefixes and compares the rows, and the counts, with the same queries run on `data/babyname.db`. It also checks the error answers, the caching headers, that the page arrives compressed and unpacks to `web/index.html`, that the icon arrives unchanged, that the stylesheet arrives compressed and unpacks to `web/bootstrap.min.css`, that the database file cannot be fetched by address, pages requested by position, including the last page of the whole table, that a request without `limit` gets 25 rows, every combination of 25 or 200 rows per page with no filter, male and female on two ranges, invalid values for both, and sorted pages: three ranges by every column in both directions, and the whole table, each compared with the same sort done by SQLite on the PC. It makes 86 checks.
 
-**`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display (its format, that it counts on by itself, and the conversion into days, hours, minutes and seconds), that the Bootstrap stylesheet is applied, the light and dark theme (Auto following a system setting the browser is told to pretend, both fixed choices, and a choice surviving a reload), that the crash notice matches what the board reports, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, the first and last buttons, the page numbers and both pagers, sorting the whole search by a column in both directions and across pages and searches, searching from both forms without a reload, an empty result, the back button, and the rows per page with the primary sex filter, including that the page opens at 50 rows again after a reload, and the loading overlay: shown at once by a search and gone when the rows are there, covering the window with its box centred both ways, the darkened background, the text, and its colours in both themes. It makes 83 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
+**`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display (its format, that it counts on by itself, and the conversion into days, hours, minutes and seconds), that the Bootstrap stylesheet is applied, the light and dark theme (Auto following a system setting the browser is told to pretend, both fixed choices, and a choice surviving a reload), that the crash notice matches what the board reports, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, the first and last buttons, the page numbers and both pagers, sorting the whole search by a column in both directions and across pages and searches, searching from both forms without a reload, an empty result, the back button, and the rows per page with the primary sex filter, including that the page opens at 25 rows again after a reload, and the loading overlay: shown at once by a search and gone when the rows are there, covering the window with its box centred both ways, the darkened background, the text, and its colours in both themes. It makes 83 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
 
 Both passed in full against the firmware described here.
 

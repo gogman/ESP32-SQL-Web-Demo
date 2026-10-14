@@ -109,10 +109,10 @@ static const int DB_PAGE_ROWS = 200;
 
 /*
  * The number of rows /api/names returns when the request does not say
- * ("limit"). The page starts at the same number, 50, the "selected" entry of
+ * ("limit"). The page starts at the same number, 25, the "selected" entry of
  * its "Rows per page" lists, so a change here must be made there as well.
  */
-static const int DB_DEFAULT_ROWS = 50;
+static const int DB_DEFAULT_ROWS = 25;
 
 /* ------------------------------------------------------------------ */
 /* Web addresses                                                      */

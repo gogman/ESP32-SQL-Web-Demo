@@ -312,7 +312,7 @@ def choose(browser, select, value):
 
 def open_at(browser, url, rows):
     """Opens the page and picks a number of rows per page. The page always
-    opens at 50; choosing another number starts its search again."""
+    opens at 25; choosing another number starts its search again."""
     browser.open(url)
     choose(browser, "perPageTop", str(rows))
 
@@ -430,7 +430,7 @@ def main():
         shown = browser.run("document.getElementById('prefix').value = 'Mar'; document.getElementById('prefixForm').requestSubmit(); "
                             "%s.classList.contains('show')" % LOADING)
         check(shown, "a search shows it at once")
-        check(browser.wait_for("!%s.classList.contains('show')" % LOADING) and wait_status(browser, "Rows 1 to 50 of %d" % len(mar)),
+        check(browser.wait_for("!%s.classList.contains('show')" % LOADING) and wait_status(browser, "Rows 1 to 25 of %d" % len(mar)),
               "and it goes away when the rows are there")
 
         browser.run("showLoading(true)")
@@ -466,34 +466,36 @@ def main():
             return "Rows %d to %d of %d" % (start + 1, start + count, of)
 
         browser.open(base + "/?prefix=Mar")
-        check(wait_status(browser, rows_of(0, 50, len(mar))) and wait_table(browser, mar[:50]), "50 rows per page at first: " + rows_of(0, 50, len(mar)))
-        check(browser.run("[document.getElementById('perPageTop').value, document.getElementById('perPageBottom').value]") == ["50", "50"],
-              "both 'Rows per page' lists show 50")
+        check(wait_status(browser, rows_of(0, 25, len(mar))) and wait_table(browser, mar[:25]), "25 rows per page at first: " + rows_of(0, 25, len(mar)))
+        check(browser.run("[document.getElementById('perPageTop').value, document.getElementById('perPageBottom').value]") == ["25", "25"],
+              "both 'Rows per page' lists show 25")
 
-        choose(browser, "perPageBottom", "25")
-        check(wait_table(browser, mar[:25]) and wait_status(browser, rows_of(0, 25, len(mar))), "25 chosen below the table: " + rows_of(0, 25, len(mar)))
-        check(browser.run("document.getElementById('perPageTop').value") == "25", "the list above the table follows")
+        # 10 is chosen for the filter checks below, so they also show that a
+        # different choice takes effect.
+        choose(browser, "perPageBottom", "10")
+        check(wait_table(browser, mar[:10]) and wait_status(browser, rows_of(0, 10, len(mar))), "10 chosen below the table: " + rows_of(0, 10, len(mar)))
+        check(browser.run("document.getElementById('perPageTop').value") == "10", "the list above the table follows")
         click(browser, "next")
-        check(wait_table(browser, mar[25:50]), "'next' shows rows 26 to 50")
+        check(wait_table(browser, mar[10:20]), "'next' shows rows 11 to 20")
 
         choose(browser, "sex", "F")
-        check(wait_table(browser, mar_f[:25]) and wait_status(browser, rows_of(0, 25, len(mar_f))),
-              "'Female' keeps only female rows: " + rows_of(0, 25, len(mar_f)))
-        last_f = (len(mar_f) - 1) // 25 * 25
+        check(wait_table(browser, mar_f[:10]) and wait_status(browser, rows_of(0, 10, len(mar_f))),
+              "'Female' keeps only female rows: " + rows_of(0, 10, len(mar_f)))
+        last_f = (len(mar_f) - 1) // 10 * 10
         click(browser, "last")
         check(wait_table(browser, mar_f[last_f:]), "'last' shows the last %d female rows" % (len(mar_f) - last_f))
         choose(browser, "sex", "M")
-        check(wait_table(browser, mar_m[:25]) and wait_status(browser, rows_of(0, 25, len(mar_m))),
-              "'Male' keeps only male rows: " + rows_of(0, 25, len(mar_m)))
+        check(wait_table(browser, mar_m[:10]) and wait_status(browser, rows_of(0, 10, len(mar_m))),
+              "'Male' keeps only male rows: " + rows_of(0, 10, len(mar_m)))
         choose(browser, "sex", "")
-        check(wait_table(browser, mar[:25]), "'All' shows every row again")
+        check(wait_table(browser, mar[:10]), "'All' shows every row again")
 
-        # The choice is not remembered: a reload opens at 50 again.
+        # The choice is not remembered: a reload opens at 25 again.
         choose(browser, "perPageTop", "200")
         check(wait_status(browser, rows_of(0, 200, len(mar))), "200 chosen: " + rows_of(0, 200, len(mar)))
         browser.open(base + "/?prefix=Mar")
-        check(wait_status(browser, rows_of(0, 50, len(mar))) and browser.run("[document.getElementById('perPageTop').value, document.getElementById('perPageBottom').value]") == ["50", "50"],
-              "a reload opens at 50 rows per page again")
+        check(wait_status(browser, rows_of(0, 25, len(mar))) and browser.run("[document.getElementById('perPageTop').value, document.getElementById('perPageBottom').value]") == ["25", "25"],
+              "a reload opens at 25 rows per page again")
 
         # The rest of this test was written for 200 rows per page, so every page
         # it opens from here on is switched to 200 first (open_at).
