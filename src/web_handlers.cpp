@@ -26,17 +26,18 @@
 static_assert(db_mgr::CHUNK_SIZE <= ChunkServer::MAX_CHUNK_SIZE, "a database chunk must fit in one write");
 
 /*
- * The application page, web/index.html.
+ * The application page, web/index.html, gzip-compressed.
  *
- * It is not read from the filesystem: board_build.embed_txtfiles in
- * platformio.ini makes the build copy the file into the firmware itself.
+ * It is not read from the filesystem. tools/pack_page.py compresses it into
+ * web/index.html.gz before every build, and board_build.embed_files in
+ * platformio.ini makes the build copy that file into the firmware itself.
  * The linker then provides two symbols marking where that copy begins and
  * ends. Their names are generated from the file's path, with every
  * character that is not a letter or digit replaced by an underscore. The
  * asm("...") part ties our readable C++ names to those generated ones.
  */
-extern const char INDEX_HTML_START[] asm("_binary_web_index_html_start");
-extern const char INDEX_HTML_END[] asm("_binary_web_index_html_end");
+extern const char INDEX_HTML_START[] asm("_binary_web_index_html_gz_start");
+extern const char INDEX_HTML_END[] asm("_binary_web_index_html_gz_end");
 
 /*
  * When this file was compiled: the date and time the compiler ran. It is
@@ -181,12 +182,15 @@ static void handleIndex()
   }
 
   /*
-   * Send the embedded page straight from flash, without copying it. The
-   * length is the distance between the two linker symbols, minus one
-   * because the build adds a terminating zero after the file's content
-   * (the same length the ETag was computed over).
+   * Send the embedded page straight from flash, without copying it. It is
+   * stored gzip-compressed (see tools/pack_page.py) and sent exactly as
+   * stored; "Content-Encoding: gzip" tells the browser to unpack it. Every
+   * browser accepts gzip, so no uncompressed copy is kept. The length is
+   * the distance between the two linker symbols, the same length the ETag
+   * was computed over.
    */
-  server->send_P(200, "text/html", INDEX_HTML_START, INDEX_HTML_END - INDEX_HTML_START - 1);
+  server->sendHeader("Content-Encoding", "gzip");
+  server->send_P(200, "text/html", INDEX_HTML_START, INDEX_HTML_END - INDEX_HTML_START);
 }
 
 /*
@@ -568,7 +572,7 @@ void registerWebHandlers(ChunkServer &webServer, db_mgr &db, int cacheKiB, bool 
    * Any change to the page changes the result. The page is a few kilobytes,
    * so this takes a fraction of a millisecond, once, at startup.
    */
-  const size_t pageLength = INDEX_HTML_END - INDEX_HTML_START - 1;
+  const size_t pageLength = INDEX_HTML_END - INDEX_HTML_START;
   uint32_t checksum = 2166136261u;
 
   for (size_t i = 0; i < pageLength; i++)

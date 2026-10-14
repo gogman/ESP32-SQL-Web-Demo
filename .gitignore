@@ -4,6 +4,9 @@
 .vscode/launch.json
 .vscode/ipch
 
+# Generated before every build by tools/pack_page.py
+web/index.html.gz
+
 # Passwords
 include/Secrets.h
 

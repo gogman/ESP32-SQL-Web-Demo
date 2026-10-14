@@ -278,7 +278,10 @@ def main():
     # the board must answer 304 "not modified" with an empty body.
     status, headers, body, ms = request(base, "/")
     etag = headers.get("ETag")
-    check(status == 200 and body.rstrip().endswith(b"</html>") and etag, "the page is served complete, %d bytes in %.0f ms" % (len(body), ms))
+    with open(os.path.join(PROJECT, "web", "index.html"), "rb") as file:
+        page = file.read()
+    check(status == 200 and headers.get("Content-Encoding") == "gzip" and gzip.decompress(body) == page and etag,
+          "the page is served gzip-compressed, %d bytes for %d, in %.0f ms, and unpacks to web/index.html" % (len(body), len(page), ms))
     status, _, body, ms = request(base, "/", {"If-None-Match": etag or ""})
     check(status == 304 and not body, "an unchanged page is answered 304 in %.0f ms" % ms)
 

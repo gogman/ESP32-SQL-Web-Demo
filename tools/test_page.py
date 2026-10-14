@@ -361,6 +361,38 @@ def main():
         check(browser.run("document.getElementById('results').hidden"), "no results area without a search")
         check(browser.run("document.getElementById('problem').hidden"), "no problem is reported")
 
+        # --- Light and dark theme ------------------------------------------------
+        # The page sets Bootstrap's data-bs-theme on the document. "Auto" follows
+        # the system setting, which the browser can be told to pretend; a choice
+        # is remembered in the browser and survives a reload.
+        print("\nLight and dark theme")
+        THEME = "document.documentElement.getAttribute('data-bs-theme')"
+        BACKGROUND = "getComputedStyle(document.body).backgroundColor"
+
+        def system_theme(scheme):
+            browser.call("Emulation.setEmulatedMedia", features=[{"name": "prefers-color-scheme", "value": scheme}])
+
+        system_theme("light")
+        check(browser.run("document.getElementById('themeAuto').checked") and browser.wait_for(THEME + " == 'light'"),
+              "'Auto' is chosen at first and follows a light system setting")
+        light_background = browser.run(BACKGROUND)
+        system_theme("dark")
+        check(browser.wait_for(THEME + " == 'dark'"), "and switches to dark when the system does")
+        check(browser.run(BACKGROUND) != light_background, "the background changes with it (%s, was %s)" % (browser.run(BACKGROUND), light_background))
+
+        browser.run("document.getElementById('themeLight').click()")
+        check(browser.wait_for(THEME + " == 'light'"), "'Light' overrides the dark system setting")
+        browser.open(base + "/")
+        check(browser.wait_for(THEME + " == 'light'") and browser.run("document.getElementById('themeLight').checked"),
+              "and is still chosen after a reload")
+
+        system_theme("light")
+        browser.run("document.getElementById('themeDark').click()")
+        check(browser.wait_for(THEME + " == 'dark'"), "'Dark' overrides a light system setting")
+
+        browser.run("document.getElementById('themeAuto').click()")
+        check(browser.wait_for(THEME + " == 'light'"), "'Auto' follows the system again")
+
         # The crash notice must be shown exactly when the board says a crash
         # dump is waiting. The board is asked from inside the page.
         waiting = browser.run("fetch('/api/status').then(function (r) { return r.json(); }).then(function (s) { return s.crash_dump; })")

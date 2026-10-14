@@ -3,17 +3,40 @@
 <head>
 <meta charset='utf-8'>
 <meta name='viewport' content='width=device-width, initial-scale=1'>
-<title>ESP32 Sqlite local database query through web server</title>
+<title>ESP32 Sqlite DB Demo</title>
 <link rel='stylesheet' href='/bootstrap.min.css?v=5.3.8'>
 <style>
-#head th { cursor: pointer; }
+.bi { vertical-align: -0.125em; }
+#head th { cursor: pointer; --bs-table-bg: var(--bs-primary-bg-subtle); --bs-table-color: var(--bs-primary-text-emphasis); }
 </style>
+<script>
+function storedTheme() {
+  try { return localStorage.getItem('theme') || 'auto'; } catch (error) { return 'auto'; }
+}
+
+function applyTheme(choice) {
+  var dark = choice == 'dark' || (choice == 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.setAttribute('data-bs-theme', dark ? 'dark' : 'light');
+}
+
+applyTheme(storedTheme());
+</script>
 </head>
 <body class='bg-body-tertiary'>
 <header class='bg-primary text-white py-3 mb-4'>
-<div class='container d-flex flex-wrap justify-content-between align-items-baseline gap-2'>
-<h1 class='h4 mb-0'>ESP32 Sqlite local database query through web server</h1>
+<div class='container d-flex flex-wrap justify-content-between align-items-center gap-2'>
+<h1 class='h4 mb-0'><a href="/" class='text-white text-decoration-none'>ESP32 Sqlite DB Demo</a></h1>
+<div class='d-flex flex-wrap align-items-center gap-3'>
 <span>Uptime: <span id='uptime'>...</span></span>
+<div class='btn-group btn-group-sm' role='group' aria-label='Colour theme'>
+<input type='radio' class='btn-check' name='theme' id='themeLight' value='light' autocomplete='off'>
+<label class='btn btn-outline-light' for='themeLight' title='Light'><svg class='bi' width='16' height='16' fill='currentColor' viewBox='0 0 16 16' aria-hidden='true'><path d='M8 11a3 3 0 1 1 0-6 3 3 0 0 1 0 6m0 1a4 4 0 1 0 0-8 4 4 0 0 0 0 8M8 0a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2A.5.5 0 0 1 8 0m0 13a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2A.5.5 0 0 1 8 13m8-5a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1 0-1h2a.5.5 0 0 1 .5.5M3 8a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1 0-1h2A.5.5 0 0 1 3 8m10.657-5.657a.5.5 0 0 1 0 .707l-1.414 1.415a.5.5 0 1 1-.707-.708l1.414-1.414a.5.5 0 0 1 .707 0m-9.193 9.193a.5.5 0 0 1 0 .707L3.05 13.657a.5.5 0 0 1-.707-.707l1.414-1.414a.5.5 0 0 1 .707 0m9.193 2.121a.5.5 0 0 1-.707 0l-1.414-1.414a.5.5 0 0 1 .707-.707l1.414 1.414a.5.5 0 0 1 0 .707M4.464 4.465a.5.5 0 0 1-.707 0L2.343 3.05a.5.5 0 1 1 .707-.707l1.414 1.414a.5.5 0 0 1 0 .708'/></svg><span class='visually-hidden'>Light</span></label>
+<input type='radio' class='btn-check' name='theme' id='themeDark' value='dark' autocomplete='off'>
+<label class='btn btn-outline-light' for='themeDark' title='Dark'><svg class='bi' width='16' height='16' fill='currentColor' viewBox='0 0 16 16' aria-hidden='true'><path d='M6 .278a.77.77 0 0 1 .08.858 7.2 7.2 0 0 0-.878 3.46c0 4.021 3.278 7.277 7.318 7.277q.792-.001 1.533-.16a.79.79 0 0 1 .81.316.73.73 0 0 1-.031.893A8.35 8.35 0 0 1 8.344 16C3.734 16 0 12.286 0 7.71 0 4.266 2.114 1.312 5.124.06A.75.75 0 0 1 6 .278M4.858 1.311A7.27 7.27 0 0 0 1.025 7.71c0 4.02 3.279 7.276 7.319 7.276a7.32 7.32 0 0 0 5.205-2.162q-.506.063-1.029.063c-4.61 0-8.343-3.714-8.343-8.29 0-1.167.242-2.278.681-3.286'/></svg><span class='visually-hidden'>Dark</span></label>
+<input type='radio' class='btn-check' name='theme' id='themeAuto' value='auto' autocomplete='off'>
+<label class='btn btn-outline-light' for='themeAuto' title='Auto: follow the system setting'><svg class='bi' width='16' height='16' fill='currentColor' viewBox='0 0 16 16' aria-hidden='true'><path d='M0 4s0-2 2-2h12s2 0 2 2v6s0 2-2 2h-4q0 1 .25 1.5H11a.5.5 0 0 1 0 1H5a.5.5 0 0 1 0-1h.75Q6 13 6 12H2s-2 0-2-2zm1.398-.855a.76.76 0 0 0-.254.302A1.5 1.5 0 0 0 1 4.01V10c0 .325.078.502.145.602q.105.156.302.254a1.5 1.5 0 0 0 .538.143L2.01 11H14c.325 0 .502-.078.602-.145a.76.76 0 0 0 .254-.302 1.5 1.5 0 0 0 .143-.538L15 9.99V4c0-.325-.078-.502-.145-.602a.76.76 0 0 0-.302-.254A1.5 1.5 0 0 0 13.99 3H2c-.325 0-.502.078-.602.145'/></svg><span class='visually-hidden'>Auto</span></label>
+</div>
+</div>
 </div>
 </header>
 
@@ -44,7 +67,7 @@
 <nav aria-label='Pages, above the table'><ul id='pagerTop' class='pagination flex-wrap' hidden></ul></nav>
 <div class='table-responsive'>
 <table id='table' class='table table-sm table-striped table-hover table-bordered bg-body' hidden>
-<thead id='head' class='table-primary user-select-none' title='Click a column to sort all rows of the search by it'><tr><th>Year</th><th>State</th><th>Name</th><th>Total babies</th><th>Primary Sex</th><th>Ratio</th><th>Per 100k</th></tr></thead>
+<thead id='head' class='user-select-none' title='Click a column to sort all rows of the search by it'><tr><th>Year</th><th>State</th><th>Name</th><th>Total babies</th><th>Primary Sex</th><th>Ratio</th><th>Per 100k</th></tr></thead>
 <tbody id='rows'></tbody>
 </table>
 </div>
@@ -280,6 +303,21 @@ element('rangeForm').onsubmit = function (event) {
 };
 
 window.onpopstate = function () { startSearch(readAddress()); };
+
+var themeChoice = storedTheme();
+
+document.querySelectorAll('input[name=theme]').forEach(function (input) {
+  input.checked = input.value == themeChoice;
+  input.onchange = function () {
+    themeChoice = input.value;
+    try { localStorage.setItem('theme', themeChoice); } catch (error) {}
+    applyTheme(themeChoice);
+  };
+});
+
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function () {
+  if (themeChoice == 'auto') applyTheme('auto');
+});
 
 PAGERS.forEach(function (id) { element(id).onclick = pagerClick; });
 

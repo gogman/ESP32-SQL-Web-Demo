@@ -38,11 +38,13 @@ If the board is ever asked to write data, or is exposed to people who are not tr
 | `include/chunk_server.h` | A web server class that sends streamed responses efficiently |
 | `include/Definitions.h` | All settings |
 | `include/Secrets.h` | WiFi name and passwords; not kept in version control. `Secrets.example.h` is the template |
-| `web/index.html` | The application page, built into the firmware |
+| `web/index.html` | The application page, built into the firmware compressed |
+| `web/index.html.gz` | The compressed page, generated before every build; not in version control |
 | `web/bootstrap.min.css` | Bootstrap 5.3.8, the stylesheet the page links to. Not uploaded itself; see `tools/pack_css.py` |
 | `data/` | The filesystem image: `babyname.db` and `bootstrap.min.css.gz` |
 | `db_backup/babyname.original.db` | The original database that `data/babyname.db` is built from |
 | `tools/rebuild_db.py` | Builds `data/babyname.db` from the original |
+| `tools/pack_page.py` | Compresses `web/index.html` into `web/index.html.gz`; PlatformIO runs it before every build |
 | `tools/pack_css.py` | Compresses `web/bootstrap.min.css` into `data/bootstrap.min.css.gz` |
 | `tools/test_api.py` | Checks the addresses of a running board against the database file |
 | `tools/test_page.py` | Checks the page of a running board in a real browser |
@@ -255,13 +257,15 @@ The HTTP status and headers of `/api/names` are sent together with the first chu
 
 ## Caching
 
-- **The page** is sent with an `ETag` and `Cache-Control: no-cache`. The browser keeps its copy and asks each time whether it has changed; if not, the board answers `304 Not Modified` with no body. The `ETag` is computed at startup from the page itself (its length and an FNV-1a checksum of its content), so it changes exactly when the page changes.
+- **The page** is sent with an `ETag` and `Cache-Control: no-cache`. The browser keeps its copy and asks each time whether it has changed; if not, the board answers `304 Not Modified` with no body. The `ETag` is computed at startup from the page itself (the length of the compressed page and an FNV-1a checksum of it), so it changes exactly when the page changes.
 - **Rows and counts** requested with the `v` parameter are sent with `Cache-Control: private, max-age=86400`, so the browser may reuse them for a day. The value of `v` is the database version. When a new database is uploaded the version changes, the request addresses change with it, and old cached answers are not reused.
 - **Status and errors** are never cached.
 
 ## The web page
 
-`web/index.html` is the whole user interface. It is not stored on the board's filesystem: the build embeds it into the firmware (`board_build.embed_txtfiles` in `platformio.ini`) and `src/web_handlers.cpp` sends it for `/` and `/query_db`. After changing the page, the firmware has to be rebuilt and uploaded; uploading the filesystem does not update it.
+`web/index.html` is the whole user interface. It is not stored on the board's filesystem: the build embeds it into the firmware, compressed, and `src/web_handlers.cpp` sends it for `/` and `/query_db`.
+
+Before every build PlatformIO runs `tools/pack_page.py` (`extra_scripts` in `platformio.ini`), which gzip-compresses the page into `web/index.html.gz`; `board_build.embed_files` then copies that file into the firmware. The board sends it exactly as stored, with `Content-Encoding: gzip`, and the browser unpacks it: about 4.9 KB on the wire instead of 14.3 KB, and 9 KB less firmware. Every browser accepts gzip, so no uncompressed copy is kept. A tool that does not unpack gzip, such as `curl` without `--compressed`, receives the compressed bytes. Edit `index.html` only; the `.gz` file is regenerated and is not in version control. After changing the page, the firmware has to be rebuilt and uploaded; uploading the filesystem does not update it.
 
 The file itself contains no comments, to keep it small on the wire. This section is its documentation.
 
@@ -277,7 +281,7 @@ Because the address always describes the search, results can be bookmarked and s
 
 ### Structure
 
-- **Header.** A coloured bar with the title and the uptime. A `span` with the id `uptime` shows `...` until the script fills it in from `/api/status`.
+- **Header.** A coloured bar with the title, the uptime and the theme switcher. A `span` with the id `uptime` shows `...` until the script fills it in from `/api/status`. The switcher is three radio buttons named `theme`, `themeLight`, `themeDark` and `themeAuto`, drawn as a button group of three icons from Bootstrap Icons 1.13.2: `bi-sun` for light, `bi-moon` for dark and `bi-display` for auto. The icons are written into the page as inline SVG, so no icon font or extra file is loaded; they take their colour from the button (`fill='currentColor'`). Each button has a tooltip and a hidden text label for screen readers.
 - **Problem line.** A red alert box with the id `problem`, hidden unless the board reports that the filesystem is not mounted or the database is not open.
 - **Crash notice.** A yellow alert box with the id `crash`, shown when the board reports a waiting crash dump.
 - **Two forms**, `prefixForm` and `rangeForm`, together in one card. They still declare method `GET` and action `/`, which is what they would do without the script, but the script handles their submission. The `id` attributes of the fields let the script read them and write the current search back.
@@ -285,12 +289,13 @@ Because the address always describes the search, results can be bookmarked and s
 
 ### Styling
 
-The look comes from Bootstrap's classes in the markup. The page has one style rule of its own, the pointer cursor on the table heading, because Bootstrap has no class for it.
+The look comes from Bootstrap's classes in the markup. The page has two style rules of its own. One lines the icons up with the text, as the Bootstrap Icons stylesheet would (`vertical-align: -0.125em`). The other is for the table heading: a pointer cursor, which Bootstrap has no class for, and Bootstrap's "primary subtle" colours, set through the table's colour variables. Bootstrap's own `table-primary` would look the same in light mode but stays light blue in dark mode.
 
 | Part | Bootstrap classes |
 |---|---|
 | Page width and margins | `container` |
 | Header bar | `bg-primary`, `text-white`, flex utilities |
+| Theme switcher | `btn-group btn-group-sm`, `btn-check` radio buttons with `btn btn-outline-light` labels, `visually-hidden` for the text labels |
 | Problem line | `alert alert-danger` |
 | Crash notice | `alert alert-warning` |
 | Search forms | `card`, the grid (`row`, `col-sm`), `form-control`, `btn btn-primary` |
@@ -350,6 +355,20 @@ Two things to keep in mind when changing the markup:
   - Columns 5 and 6 (ratio and rate per 100k) are shown with exactly two decimals. The board sends them without trailing zeros, so `80.8` arrives and is shown as `80.80`. A type check guards against `null`, which the board sends for a value that cannot be written as a number.
 - **`search(newQuery)`** is what the forms call: it puts the search into the address bar and starts it.
 
+### Light and dark theme
+
+Bootstrap 5.3 draws every component in a light or a dark version, chosen by the `data-bs-theme` attribute on the `html` element. The switcher in the header sets it:
+
+| Choice | Theme |
+|---|---|
+| Light | Always light |
+| Dark | Always dark |
+| Auto | Follows the system setting (`prefers-color-scheme`), and changes with it while the page is open. The default |
+
+The choice is kept in the browser's `localStorage` under `theme`, so it survives a reload. If storage is not available, as in some private windows, the page falls back to Auto.
+
+The two functions that do this, `storedTheme()` and `applyTheme(choice)`, sit in a small script in the page's `head`, which runs before anything is drawn. That way a page set to dark never shows a flash of light while it loads. The rest, marking the current choice and reacting to clicks and to system changes, is in the main script; its variable `themeChoice` holds the current choice.
+
 ### Navigation
 
 The same pager is shown above and below the table, built from Bootstrap's pagination component. Its items, from left to right:
@@ -392,9 +411,9 @@ Run these from the project folder.
 
 Both test scripts default to `http://esp32.local`. Passing the board's IP address avoids a name lookup of about a second per request on Windows. Both need only the Python standard library. On this PC, Python is the one that comes with PlatformIO: `%USERPROFILE%\.platformio\penv\Scripts\python.exe`.
 
-**`tools/test_api.py`** fetches every page of a set of ranges and prefixes and compares the rows, and the counts, with the same queries run on `data/babyname.db`. It also checks the error answers, the caching headers, that the stylesheet arrives compressed and unpacks to `web/bootstrap.min.css`, that the database file cannot be fetched by address, pages requested by position, including the last page of the whole table, and sorted pages: three ranges by every column in both directions, and the whole table, each compared with the same sort done by SQLite on the PC. It makes 60 checks.
+**`tools/test_api.py`** fetches every page of a set of ranges and prefixes and compares the rows, and the counts, with the same queries run on `data/babyname.db`. It also checks the error answers, the caching headers, that the page arrives compressed and unpacks to `web/index.html`, that the stylesheet arrives compressed and unpacks to `web/bootstrap.min.css`, that the database file cannot be fetched by address, pages requested by position, including the last page of the whole table, and sorted pages: three ranges by every column in both directions, and the whole table, each compared with the same sort done by SQLite on the PC. It makes 60 checks.
 
-**`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display, that the Bootstrap stylesheet is applied, that the crash notice matches what the board reports, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, the first and last buttons, the page numbers and both pagers, sorting the whole search by a column in both directions and across pages and searches, searching from both forms without a reload, an empty result, and the back button. It makes 54 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
+**`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display, that the Bootstrap stylesheet is applied, the light and dark theme (Auto following a system setting the browser is told to pretend, both fixed choices, and a choice surviving a reload), that the crash notice matches what the board reports, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, the first and last buttons, the page numbers and both pagers, sorting the whole search by a column in both directions and across pages and searches, searching from both forms without a reload, an empty result, and the back button. It makes 61 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
 
 Both passed in full against the firmware described here.
 
@@ -553,10 +572,9 @@ In rough order of value.
 1. **Give the board a fixed address.** Either fill in `STATIC_IP` and `STATIC_GATEWAY` in `include/Definitions.h` or reserve the address on the router. This avoids the name lookup and the changing address.
 2. **Turn the timing log off** when it is no longer needed, or enable it only in the Debug build.
 3. **Handle a lost WiFi connection at run time**, falling back to the access point after a period without the network.
-4. **Compress the page.** Embedding a gzip-compressed copy would cut the 9 KB transfer by more than half. The gain is small because the page is cached.
-5. **Run the tests automatically.** Both test scripts need a board on the network; a single command that uploads, waits for the board and runs both would make that routine.
-6. **Reconsider updates over WiFi.** They were added and removed during development because they need two firmware slots, which leaves about 1.1 MB for the filesystem. They would remove the dependence on the serial upload.
+4. **Run the tests automatically.** Both test scripts need a board on the network; a single command that uploads, waits for the board and runs both would make that routine.
+5. **Reconsider updates over WiFi.** They were added and removed during development because they need two firmware slots, which leaves about 1.1 MB for the filesystem. They would remove the dependence on the serial upload.
 
 Not on this list, because the project is a read-only demonstration: writing to the database from the board, a login, and encryption. See [Purpose](#purpose).
 
-Done since the first version of this document: version control, a content-based cache label for the page, no automatic formatting of the filesystem, an automated browser test, a row total, searching without a reload, column sorting (now of the whole search, on the board), first and last buttons, removal of the file listing, the Bootstrap stylesheet and pagination, the crash-dump notice, the `-O2` measurement, and the crash-dump procedure.
+Done since the first version of this document: version control, a content-based cache label for the page, no automatic formatting of the filesystem, an automated browser test, a row total, searching without a reload, column sorting (now of the whole search, on the board), first and last buttons, removal of the file listing, the Bootstrap stylesheet and pagination, the crash-dump notice, the compressed page, the `-O2` measurement, and the crash-dump procedure.
