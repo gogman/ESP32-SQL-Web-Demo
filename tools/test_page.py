@@ -477,10 +477,12 @@ def main():
         check(wait_status(browser, first_status) and browser.run(TABLE) == as_shown(mar[:page_size]),
               "'previous' returns to the first page")
 
-        # The first page was fetched twice by now. The second time it should have
-        # come from the browser's cache, which shows as a transfer size of zero.
+        # The first page has been fetched at least twice by now; an earlier
+        # section may have fetched it already. The repeat after 'previous' must
+        # have come from the browser's cache, which shows as a transfer size of
+        # zero.
         sizes = browser.run("performance.getEntriesByType('resource').filter(function (e) { return e.name.indexOf('/api/names') >= 0 && e.name.indexOf('after_name') < 0; }).map(function (e) { return e.transferSize; })")
-        check(len(sizes) == 2 and sizes[0] > 0 and sizes[1] == 0, "the repeated page came from the browser's cache (transfer sizes %s)" % sizes)
+        check(len(sizes) >= 2 and sizes[-1] == 0, "the repeated page came from the browser's cache (transfer sizes %s)" % sizes)
 
         # --- First and last ------------------------------------------------------
         # A range with many pages. "last" has to reach a page the browser has

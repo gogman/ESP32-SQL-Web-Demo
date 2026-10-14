@@ -68,15 +68,27 @@ def request(base, path, headers=None):
     """Returns (status, headers, body, milliseconds)."""
     call = urllib.request.Request(base + path, headers=headers or {})
     start = time.perf_counter()
-    try:
-        with urllib.request.urlopen(call, timeout=60) as response:
-            status, reply_headers, body = response.status, response.headers, response.read()
-    except urllib.error.HTTPError as error:
-        # urllib raises an exception for every status of 400 and above. For this
-        # script those are ordinary answers to be inspected (several checks
-        # expect a 400, 404 or 405), so the exception is unpacked into the same
-        # three values a successful response gives.
-        status, reply_headers, body = error.code, error.headers, error.read()
+
+    # Looking up a name such as esp32.local fails now and then on Windows. A
+    # request that could not reach the board at all is tried again, up to
+    # three times in all; the time reported then includes the failed tries.
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(call, timeout=60) as response:
+                status, reply_headers, body = response.status, response.headers, response.read()
+            break
+        except urllib.error.HTTPError as error:
+            # urllib raises an exception for every status of 400 and above. For
+            # this script those are ordinary answers to be inspected (several
+            # checks expect a 400, 404 or 405), so the exception is unpacked into
+            # the same three values a successful response gives.
+            status, reply_headers, body = error.code, error.headers, error.read()
+            break
+        except urllib.error.URLError:
+            if attempt == 2:
+                raise
+            time.sleep(1)
+
     return status, reply_headers, body, (time.perf_counter() - start) * 1000
 
 

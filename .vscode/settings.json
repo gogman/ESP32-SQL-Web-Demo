@@ -1,3 +1,12 @@
 {
-    "files.eol": "\n"
+    "files.eol": "\n",
+
+    // The Testing panel runs tools/board_tests.py through pytest (see
+    // pytest.ini), with the project's own Python environment in .venv; see
+    // tools/requirements.txt for setting it up. The board's address comes from
+    // BOARD_URL, which can be set in a .env file in the project folder.
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+    "python.testing.pytestEnabled": true,
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestArgs": []
 }

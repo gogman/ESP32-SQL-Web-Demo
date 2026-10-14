@@ -49,6 +49,10 @@ If the board is ever asked to write data, or is exposed to people who are not tr
 | `tools/pack_css.py` | Compresses `web/bootstrap.min.css` into `data/bootstrap.min.css.gz` |
 | `tools/test_api.py` | Checks the addresses of a running board against the database file |
 | `tools/test_page.py` | Checks the page of a running board in a real browser |
+| `tools/run_tests.py` | Builds and uploads the firmware, waits for the board and runs both tests |
+| `tools/board_tests.py` | The same tests as pytest tests, for VS Code's Testing panel |
+| `tools/requirements.txt` | The Python packages for the Testing panel (pytest) |
+| `pytest.ini` | Tells pytest where the tests are |
 | `defpart.csv` | The flash partition table |
 | `platformio.ini` | Build, upload and monitor settings |
 
@@ -425,8 +429,31 @@ Run these from the project folder.
 | `python tools/rebuild_db.py` | Rebuild `data/babyname.db` from the original |
 | `python tools/test_api.py [http://address]` | Check the addresses of a running board |
 | `python tools/test_page.py [http://address]` | Check the page of a running board in a browser |
+| `python tools/run_tests.py [http://address]` | Build, upload, wait for the board, run both tests |
 
 Both test scripts default to `http://esp32.local`. Passing the board's IP address avoids a name lookup of about a second per request on Windows. Both need only the Python standard library. On this PC, Python is the one that comes with PlatformIO: `%USERPROFILE%\.platformio\penv\Scripts\python.exe`.
+
+**`tools/run_tests.py`** does the whole routine in one command: it builds and uploads the firmware, waits until the board answers with the new firmware, and runs both test scripts against it, stopping at the first step that fails. It ends with a summary, and its exit code is 0 only if everything passed. It recognises the new firmware by its uptime: a board that answers but has been running longer than the time since the upload has not restarted yet. Before testing it also stops if the board has no usable database, and points out a waiting crash dump. Given a name such as `esp32.local`, it looks the name up once and runs the tests against the IP address the board reports, because the tests make hundreds of requests and a lookup on Windows takes up to a second and now and then fails. `tools/test_api.py` also tries a request again, up to three times, when it cannot reach the board at all. Options:
+
+| Option | Effect |
+|---|---|
+| `--no-upload` | Test the firmware already on the board |
+| `--uploadfs` | Also upload the filesystem image first, after changing the database or the stylesheet |
+| `--env Debug` | Build another environment (default `Release`) |
+| `--api-only`, `--page-only` | Run only one of the two tests |
+
+In VS Code the same runs are available as tasks (`.vscode/tasks.json`): Terminal > Run Task... offers "Board tests: upload firmware and run all", "... run all without uploading" and "... upload filesystem and firmware, run all", and "Tasks: Run Test Task" starts the first one. Each asks for the board's address. PlatformIO's own Test button is something else: it runs `pio test`, which builds C++ unit tests from the `test` folder, and this project has none.
+
+The same tests also appear in VS Code's Testing panel, through pytest and the Python extension: `tools/board_tests.py` holds three tests, "board is ready" (it answers, has its database, and has no crash dump waiting), "addresses" (runs `tools/test_api.py`) and "page in browser" (runs `tools/test_page.py`). A failing test lists the checks that failed, and its output holds the script's full report. These tests do not build or upload anything; they test the firmware already on the board. `pytest.ini` tells pytest where they are, and `.vscode/settings.json` turns pytest on and selects the project's own Python environment. That environment is set up once:
+
+```powershell
+& "$env:USERPROFILE\.platformio\penv\Scripts\python.exe" -m venv .venv
+.venv\Scripts\python.exe -m pip install -r toolsequirements.txt
+```
+
+The board's address comes from the environment variable `BOARD_URL`, default `http://esp32.local`. To use another, put a line such as `BOARD_URL=http://172.16.100.185` in a file named `.env` in the project folder, which the Python extension reads. From a terminal the same tests run with `.venv\Scripts\python.exe -m pytest`.
+
+A full run takes about a minute and a half: 30 to 40 s to build and upload, under 10 s for the board to restart, and about 25 s for each test.
 
 **`tools/test_api.py`** fetches every page of a set of ranges and prefixes and compares the rows, and the counts, with the same queries run on `data/babyname.db`. It also checks the error answers, the caching headers, that the page arrives compressed and unpacks to `web/index.html`, that the icon arrives unchanged, that the stylesheet arrives compressed and unpacks to `web/bootstrap.min.css`, that the database file cannot be fetched by address, pages requested by position, including the last page of the whole table, every combination of 25 or 200 rows per page with no filter, male and female on two ranges, invalid values for both, and sorted pages: three ranges by every column in both directions, and the whole table, each compared with the same sort done by SQLite on the PC. It makes 85 checks.
 
@@ -589,9 +616,8 @@ In rough order of value.
 1. **Give the board a fixed address.** Either fill in `STATIC_IP` and `STATIC_GATEWAY` in `include/Definitions.h` or reserve the address on the router. This avoids the name lookup and the changing address.
 2. **Turn the timing log off** when it is no longer needed, or enable it only in the Debug build.
 3. **Handle a lost WiFi connection at run time**, falling back to the access point after a period without the network.
-4. **Run the tests automatically.** Both test scripts need a board on the network; a single command that uploads, waits for the board and runs both would make that routine.
-5. **Reconsider updates over WiFi.** They were added and removed during development because they need two firmware slots, which leaves about 1.1 MB for the filesystem. They would remove the dependence on the serial upload.
+4. **Reconsider updates over WiFi.** They were added and removed during development because they need two firmware slots, which leaves about 1.1 MB for the filesystem. They would remove the dependence on the serial upload.
 
 Not on this list, because the project is a read-only demonstration: writing to the database from the board, a login, and encryption. See [Purpose](#purpose).
 
-Done since the first version of this document: version control, a content-based cache label for the page, no automatic formatting of the filesystem, an automated browser test, a row total, searching without a reload, column sorting (now of the whole search, on the board), first and last buttons, removal of the file listing, the Bootstrap stylesheet and pagination, the crash-dump notice, the compressed page, the `-O2` measurement, and the crash-dump procedure.
+Done since the first version of this document: version control, a content-based cache label for the page, no automatic formatting of the filesystem, an automated browser test, a row total, searching without a reload, column sorting (now of the whole search, on the board), first and last buttons, removal of the file listing, the Bootstrap stylesheet and pagination, the crash-dump notice, the compressed page, a one-command test run, the `-O2` measurement, and the crash-dump procedure.

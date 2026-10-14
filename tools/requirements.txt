@@ -1,0 +1,7 @@
+# Python packages for running the board tests from VS Code's Testing panel
+# (tools/board_tests.py). The test scripts themselves need only the standard
+# library. Install into the project's .venv:
+#
+#     python -m venv .venv
+#     .venv\Scripts\python -m pip install -r tools\requirements.txt
+pytest

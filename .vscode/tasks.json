@@ -1,0 +1,61 @@
+{
+    // Tasks for running this project's tests from VS Code.
+    //
+    // The tests are the Python scripts in tools/, run against the board over
+    // the network; see "Building, uploading and testing" in docs/how-it-works.md.
+    // PlatformIO's own "Test" command (pio test) is for C++ unit tests in the
+    // test folder, which this project does not have.
+    //
+    // Run them with Terminal > Run Task..., or Ctrl+Shift+P > "Tasks: Run Test
+    // Task" for the default one. Each asks for the board's address; a name
+    // such as esp32.local is looked up once and the tests then use the IP
+    // address the board reports.
+    "version": "2.0.0",
+    "options": {
+        "cwd": "${workspaceFolder}"
+    },
+    // PlatformIO's own Python, which is always installed alongside it.
+    "windows": {
+        "command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\python.exe"
+    },
+    "linux": {
+        "command": "${env:HOME}/.platformio/penv/bin/python"
+    },
+    "osx": {
+        "command": "${env:HOME}/.platformio/penv/bin/python"
+    },
+    "type": "process",
+    "problemMatcher": [],
+    "presentation": {
+        "panel": "dedicated",
+        "clear": true
+    },
+    "tasks": [
+        {
+            "label": "Board tests: upload firmware and run all",
+            "args": ["tools/run_tests.py", "${input:address}"],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "Board tests: run all without uploading",
+            "args": ["tools/run_tests.py", "${input:address}", "--no-upload"],
+            "group": "test"
+        },
+        {
+            "label": "Board tests: upload filesystem and firmware, run all",
+            "args": ["tools/run_tests.py", "${input:address}", "--uploadfs"],
+            "group": "test"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "address",
+            "type": "promptString",
+            "description": "The board's address",
+            "default": "http://esp32.local"
+        }
+    ]
+}
