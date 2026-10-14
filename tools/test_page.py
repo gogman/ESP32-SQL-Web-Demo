@@ -471,7 +471,7 @@ def main():
         def rows_of(start, count, of):
             return status_text(start, count, of, count)
 
-        browser.open(base + "/?prefix=Mar")
+        browser.open(base + "/?startswith=Mar")
         check(wait_status(browser, rows_of(0, 25, len(mar))) and wait_table(browser, mar[:25]), "25 rows per page at first: " + rows_of(0, 25, len(mar)))
         check(browser.run("[document.getElementById('perPageTop').value, document.getElementById('perPageBottom').value]") == ["25", "25"],
               "both 'Rows per page' lists show 25")
@@ -496,10 +496,20 @@ def main():
         choose(browser, "sex", "")
         check(wait_table(browser, mar[:10]), "'All' shows every row again")
 
+        # A new number of rows per page keeps the rows in view: from page 6 at
+        # 10 rows (51 to 60), 25 rows per page shows page 3 (51 to 75).
+        click(browser, 5)
+        wait_status(browser, rows_of(40, 10, len(mar)))
+        click(browser, 6)
+        check(wait_status(browser, rows_of(50, 10, len(mar))), "page 6 at 10 rows: " + rows_of(50, 10, len(mar)))
+        choose(browser, "perPageTop", "25")
+        check(wait_table(browser, mar[50:75]) and wait_status(browser, status_text(50, 25, len(mar), 25)),
+              "25 rows per page then shows the page holding those rows: " + status_text(50, 25, len(mar), 25))
+
         # The choice is not remembered: a reload opens at 25 again.
         choose(browser, "perPageTop", "200")
         check(wait_status(browser, rows_of(0, 200, len(mar))), "200 chosen: " + rows_of(0, 200, len(mar)))
-        browser.open(base + "/?prefix=Mar")
+        browser.open(base + "/?startswith=Mar")
         check(wait_status(browser, rows_of(0, 25, len(mar))) and browser.run("[document.getElementById('perPageTop').value, document.getElementById('perPageBottom').value]") == ["25", "25"],
               "a reload opens at 25 rows per page again")
 
@@ -531,7 +541,7 @@ def main():
 
         # --- Paging --------------------------------------------------------------
         print("\nPaging through names starting with 'Mar'")
-        open_at(browser, base + "/?prefix=Mar", page_size)
+        open_at(browser, base + "/?startswith=Mar", page_size)
         first_status = status_text(0, page_size, len(mar), page_size)
         second_status = status_text(page_size, len(mar) - page_size, len(mar), page_size)
         check(wait_status(browser, first_status), "first page: " + first_status)
@@ -627,7 +637,7 @@ def main():
         # "stably", so rows with equal values stay in name order, which is the
         # board's rule too; descending is that order backwards.
         print("\nSorting the whole search")
-        open_at(browser, base + "/?prefix=Mar", page_size)
+        open_at(browser, base + "/?startswith=Mar", page_size)
         wait_status(browser, first_status)
         by_total = sorted(mar, key=lambda row: row[3])
         by_sex = sorted(mar, key=lambda row: row[4])
@@ -639,6 +649,15 @@ def main():
 
         click(browser, "next")
         check(wait_table(browser, by_total[page_size:]) and wait_status(browser, second_status), "'next' shows the rest of the sorted rows")
+
+        # Changing the sort keeps the current page.
+        click_header(browser, 3)
+        check(wait_table(browser, by_total[::-1][page_size:]) and wait_status(browser, second_status),
+              "on page 2, a second click sorts largest first and stays on page 2")
+        click_header(browser, 3)
+        check(wait_table(browser, mar[page_size:]) and wait_status(browser, second_status), "a third click restores name order, still on page 2")
+        click_header(browser, 3)
+        check(wait_table(browser, by_total[page_size:]), "and a fourth sorts smallest first again, still on page 2")
         click(browser, "last")
         click(browser, "first")
         check(wait_table(browser, by_total[:page_size]), "'first' returns to the start of the sorted rows")
@@ -661,7 +680,7 @@ def main():
         check(wait_table(browser, sorted(s_to_t, key=lambda row: row[4])[last_start:]), "and 'last' shows the end of that sorted search")
         click_header(browser, 4)
         click_header(browser, 4)
-        check(wait_table(browser, s_to_t[:page_size]), "two more clicks restore name order")
+        check(wait_table(browser, s_to_t[last_start:]), "two more clicks restore name order, still on the last page")
 
         # --- Searching without reloading the page -------------------------------
         # A marker is stored in the page. A reload would wipe it out, so finding
@@ -674,7 +693,7 @@ def main():
         browser.run("document.getElementById('prefix').value = 'bob'; document.getElementById('prefixForm').requestSubmit()")
         check(wait_status(browser, status_text(0, len(bob), len(bob), page_size)) and browser.run(TABLE) == as_shown(bob),
               "'starts with' in lower case finds the names")
-        check(browser.run("location.search") == "?prefix=bob", "the address shows the search")
+        check(browser.run("location.search") == "?startswith=bob", "the address shows the search")
         check(browser.run("window.testMarker") == "still here", "the page was not reloaded")
 
         browser.run("document.getElementById('from').value = 'Bob'; document.getElementById('to').value = 'Bobby'; document.getElementById('rangeForm').requestSubmit()")
@@ -690,7 +709,7 @@ def main():
         check(browser.wait_for("location.search == '?from=Bob&to=Bobby'") and wait_status(browser, status_text(0, len(bob), len(bob), page_size)),
               "'back' returns to the previous search")
         browser.run("history.back()")
-        browser.wait_for("location.search == '?prefix=bob'")
+        browser.wait_for("location.search == '?startswith=bob'")
         browser.run("history.back()")
         check(browser.wait_for("location.search == '' && document.getElementById('results').hidden"),
               "'back' to the start hides the results")

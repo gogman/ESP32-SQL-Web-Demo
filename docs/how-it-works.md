@@ -116,7 +116,7 @@ All addresses accept `GET` only.
 
 | Parameter | Meaning |
 |---|---|
-| `prefix` | Names starting with this text. Use this, or `from` and `to` |
+| `startswith` | Names starting with this text. Use this, or `from` and `to` |
 | `from`, `to` | The first and last name of a range, both included |
 | `after_name`, `after_year`, `after_state` | Optional. The last row of the previous page; the answer continues after it |
 | `offset` | Optional, and only used when no cursor is given. The number of rows of the range before the page. Reaches any page directly, at a cost that grows with the number |
@@ -138,7 +138,7 @@ A request without a range is answered `400`. A database failure before any outpu
 
 ### `/api/count`
 
-Takes the same `prefix` or `from` and `to` parameters, `sex` and `v`, and answers `{"count":1234}`. Errors are reported as for `/api/names`.
+Takes the same `startswith` or `from` and `to` parameters, `sex` and `v`, and answers `{"count":1234}`. Errors are reported as for `/api/names`.
 
 It is a separate address, and not part of every page of rows, because counting reads the whole range. The page asks for it once per search.
 
@@ -293,7 +293,7 @@ The file itself contains no comments, to keep it small on the wire. This section
 
 The page is both the search form and the results. A search never reloads it:
 
-- Submitting either form is intercepted by the script. The script writes the search into the address bar (for example `/?prefix=bob` or `/?from=Bob&to=Bobby`) with `history.pushState`, and loads the results.
+- Submitting either form is intercepted by the script. The script writes the search into the address bar (for example `/?startswith=bob` or `/?from=Bob&to=Bobby`) with `history.pushState`, and loads the results.
 - Opening such an address directly, or reloading the page, runs the same search from the address.
 - The browser's back and forward buttons step through earlier searches without reloading.
 
@@ -336,7 +336,7 @@ Two things to keep in mind when changing the markup:
 | Variable | Purpose |
 |---|---|
 | `COLUMNS` | The column headings, used to redraw them with or without a sort arrow |
-| `query` | The current search in the form the board expects: `{prefix}` or `{from, to}`. `null` when there is none |
+| `query` | The current search in the form the board expects: `{startswith}` or `{from, to}`. `null` when there is none |
 | `searchId` | A number increased with every new search. Each request remembers the value it started with, and its answer is ignored if a newer search has begun since |
 | `page` | The number of the page being shown, counting from 0 |
 | `cursors` | `cursors[i]` is the row that produces page `i`; `null` for page 0. Keeping all of them is what makes "previous" possible: going back is asking again with an earlier cursor |
@@ -361,7 +361,7 @@ Two things to keep in mind when changing the markup:
 - **`readAddress()`** turns the page's address into a search, or `null`. If only one of `from` and `to` is present, the other is taken as empty.
 - **`requestParams()`** builds the parameters every data request shares: the search and the database version.
 - **`fetchJson(url)`** fetches an address and reads the answer as JSON. The board sends errors as JSON too; if the status says failure but the document has no `error` member, one is added.
-- **`startSearch(newQuery)`** begins a search: it resets the paging state, shows or hides the results area, writes the search into the form fields, and then calls `load()` and `loadTotal()`. The rows are requested first, so they arrive before the count.
+- **`startSearch(newQuery, startPage)`** begins a search: it resets the paging state and starts on `startPage`, or on the first page when that is left out, shows or hides the results area, writes the search into the form fields, and then calls `load()` and `loadTotal()`. The rows are requested first, so they arrive before the count.
 - **`load()`** fetches the current page of rows.
   - If the cursor for the page is known, it is added to the request. A row is `[year, state, name, ...]`, so the cursor's name is at index 2, its year at index 0 and its state at index 1.
   - If it is not known, which happens after a jump, the page is requested by position: `offset` is the page number times `perPage`. Every request carries `limit`, set to `perPage`.
@@ -419,13 +419,13 @@ It is hidden with `visibility: hidden` and `opacity: 0`, and shown by adding the
 
 ### Rows per page and the primary sex filter
 
-The two "Rows per page" lists, above and below the table, always show the same value; changing either one changes both. The choice starts the search again from its first page. It is not remembered: the page always opens at 25, the same default the board uses for a request without `limit`.
+The two "Rows per page" lists, above and below the table, always show the same value; changing either one changes both. The choice starts the search again on the page that holds the first row that was showing: from page 6 at 10 rows (rows 51 to 60), 25 rows per page shows page 3 (rows 51 to 75). It is not remembered: the page always opens at 25, the same default the board uses for a request without `limit`.
 
 The primary sex list in the search card keeps only male or only female rows, or all. Changing it starts the current search again; the choice then stays for the following searches, like the sort order. Both values go into every request as `limit` and `sex`, and the filter into the count as well, so the status line and the pager count only the rows that are shown.
 
 ### Sorting
 
-Clicking a column heading sorts the whole search by that column, not just the rows on screen: the search starts again from its first page, with `sort` in every request. A second click reverses the order and a third returns to name order. The chosen sort is kept when starting another search.
+Clicking a column heading sorts the whole search by that column, not just the rows on screen: the search starts again on the page that was showing, with `sort` in every request, so page 3 stays page 3 in the new order. A second click reverses the order and a third returns to name order. The chosen sort is kept when starting another search.
 
 While a sort is on, pages are requested by position (`offset`) and cursors are not used, because a cursor only means something in name order. The first sorted page of a large search takes noticeably longer than the ones after it; see [Sorting on the board](#sorting-on-the-board).
 
@@ -476,7 +476,7 @@ A full run takes about a minute and a half: 30 to 40 s to build and upload, unde
 
 **`tools/test_api.py`** fetches every page of a set of ranges and prefixes and compares the rows, and the counts, with the same queries run on `data/babyname.db`. It also checks the error answers, the caching headers, that the page arrives compressed and unpacks to `web/index.html`, that the icon arrives unchanged, that the stylesheet arrives compressed and unpacks to `web/bootstrap.min.css`, that the database file cannot be fetched by address, pages requested by position, including the last page of the whole table, that a request without `limit` gets 25 rows, every combination of 25 or 200 rows per page with no filter, male and female on two ranges, invalid values for both, and sorted pages: three ranges by every column in both directions, and the whole table, each compared with the same sort done by SQLite on the PC. It makes 86 checks.
 
-**`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display (its format, that it counts on by itself, and the conversion into days, hours, minutes and seconds), that the Bootstrap stylesheet is applied, the light and dark theme (Auto following a system setting the browser is told to pretend, both fixed choices, and a choice surviving a reload), that the crash notice matches what the board reports, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, the first and last buttons, the page numbers and both pagers, sorting the whole search by a column in both directions and across pages and searches, searching from both forms without a reload, an empty result, the back button, and the rows per page with the primary sex filter, including that the page opens at 25 rows again after a reload, and the loading overlay: shown at once by a search and gone when the rows are there, covering the window with its box centred both ways, the darkened background, the text, and its colours in both themes, and the page numbers around the current page (5 at either end, 9 in the middle). It makes 88 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
+**`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display (its format, that it counts on by itself, and the conversion into days, hours, minutes and seconds), that the Bootstrap stylesheet is applied, the light and dark theme (Auto following a system setting the browser is told to pretend, both fixed choices, and a choice surviving a reload), that the crash notice matches what the board reports, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, the first and last buttons, the page numbers and both pagers, sorting the whole search by a column in both directions and across pages and searches, searching from both forms without a reload, an empty result, the back button, and the rows per page with the primary sex filter, including that the page opens at 25 rows again after a reload, and the loading overlay: shown at once by a search and gone when the rows are there, covering the window with its box centred both ways, the darkened background, the text, and its colours in both themes, the page numbers around the current page (5 at either end, 9 in the middle), and that changing the sort or the rows per page keeps the current page. It makes 93 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
 
 Both passed in full against the firmware described here.
 
@@ -500,7 +500,7 @@ The Debug build prints:
 
 - the startup steps: the WiFi connection or the fallback access point, the filesystem, the free PSRAM and the database cache, the name on the network, and the server starting;
 - a waiting crash dump;
-- one line per `/api/names` and `/api/count` request, saying how long the database work and the sending took, for example `Names 'Bob'..'(prefix)' ... database 12.54 ms, sending 11.11 ms (164 bytes in 1 chunks), whole response 30.4 ms`;
+- one line per `/api/names` and `/api/count` request, saying how long the database work and the sending took, for example `Names 'Bob'..'(startswith)' ... database 12.54 ms, sending 11.11 ms (164 bytes in 1 chunks), whole response 30.4 ms`;
 - the Arduino core's own messages at log level 5 (verbose).
 
 Even the Release build is not completely silent: the ESP32's ROM prints a few lines when the chip starts, and a crash still prints its report (see below). Both come from below the firmware.

@@ -201,7 +201,7 @@ static void handleIndex()
  * Reads the rows a request asks for: the range of names into from and to,
  * and the primary sex filter into sex.
  *
- * The range is given either as "prefix" (names starting with that text) or
+ * The range is given either as "startswith" (names starting with that text) or
  * as "from" and "to" together. The filter is the optional parameter "sex":
  * "M" or "F" (either case), or left out or empty for all rows.
  *
@@ -219,10 +219,10 @@ static bool readRange(String &from, String &to, String &sex)
     return false;
   }
 
-  if (server->hasArg("prefix"))
+  if (server->hasArg("startswith"))
   {
     /* "Starts with" becomes a range; see HIGHEST_CHARACTER. */
-    from = server->arg("prefix");
+    from = server->arg("startswith");
     to = from + HIGHEST_CHARACTER;
     return true;
   }
@@ -234,7 +234,7 @@ static bool readRange(String &from, String &to, String &sex)
     return true;
   }
 
-  sendJsonError(400, "Give either prefix, or from and to");
+  sendJsonError(400, "Give either startswith, or from and to");
   return false;
 }
 
@@ -258,7 +258,7 @@ static const char *dataCacheControl()
  *
  * Parameters (in the query string):
  *
- *   prefix               Names starting with this text. Or instead of it:
+ *   startswith           Names starting with this text. Or instead of it:
  *   from, to             The first and last name of a range.
  *   after_name,
  *   after_year,
@@ -422,7 +422,7 @@ static void handleNamesApi()
      * the query and writing the rows as JSON.
      */
     LOG_PRINTF("Names '%s'..'%s' after '%s' offset %ld sort %d%s %s: database %.2f ms, sending %.2f ms (%u bytes in %u chunks), whole response %.2f ms\n",
-                  from.c_str(), server->hasArg("prefix") ? "(prefix)" : to.c_str(), afterName.c_str(),
+                  from.c_str(), server->hasArg("startswith") ? "(startswith)" : to.c_str(), afterName.c_str(),
                   hasOffset ? offset : 0L, hasSort ? sortColumn : -1, descending ? " desc" : "", result ? "ok" : database->lastError(),
                   (pageMicros - sendMicros) / 1000.0, sendMicros / 1000.0, (unsigned)bytes, chunks,
                   (micros() - responseStart) / 1000.0);
@@ -432,7 +432,7 @@ static void handleNamesApi()
 /*
  * GET /api/count - how many names a range holds, as JSON: {"count":1234}.
  *
- * It takes the same prefix or from/to parameters as /api/names, and "v" for
+ * It takes the same startswith or from/to parameters as /api/names, and "v" for
  * caching. The page asks for it once per search, to show "Rows 1 to 200 of
  * 1234". It is a separate address, rather than part of every page of rows,
  * because counting reads the whole range: doing it once per search is cheap,
@@ -467,7 +467,7 @@ static void handleCountApi()
   if (SERIAL_LOG)
   {
     LOG_PRINTF("Count '%s'..'%s': %ld rows, whole response %.2f ms\n",
-                  from.c_str(), server->hasArg("prefix") ? "(prefix)" : to.c_str(), count,
+                  from.c_str(), server->hasArg("startswith") ? "(startswith)" : to.c_str(), count,
                   (micros() - countStart) / 1000.0);
   }
 }

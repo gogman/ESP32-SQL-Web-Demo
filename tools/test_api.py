@@ -198,7 +198,7 @@ def main():
     # the most expensive request of its kind, so its time is worth seeing.
     everything = database.execute("Select count(*) from gendered_names").fetchone()[0]
     offset = (everything - 1) // 200 * 200
-    status, _, body, ms = request(base, "/api/names?" + urllib.parse.urlencode({"prefix": "", "offset": offset, "limit": 200}))
+    status, _, body, ms = request(base, "/api/names?" + urllib.parse.urlencode({"startswith": "", "offset": offset, "limit": 200}))
     data = json.loads(body)
     check(status == 200 and len(data.get("rows", [])) == everything - offset and data.get("more") is False,
           "the last page of the whole table (position %d): %d rows in %.0f ms" % (offset, len(data.get("rows", [])), ms))
@@ -225,7 +225,7 @@ def main():
     want = [list(row) for row in database.execute(
         RANGE_SQL.replace("where name between ? and ? ", "where primary_sex = 'F' ")
                  .replace("order by name, year, state", "order by total_babies desc, name desc, year desc, state desc"))]
-    status, _, body, ms = request(base, "/api/names?" + urllib.parse.urlencode({"prefix": "", "sex": "f", "sort": 3, "desc": 1, "limit": 50, "offset": 100}))
+    status, _, body, ms = request(base, "/api/names?" + urllib.parse.urlencode({"startswith": "", "sex": "f", "sort": 3, "desc": 1, "limit": 50, "offset": 100}))
     check(json.loads(body).get("rows") == want[100:150], "the whole table, female only (sex=f), sorted by total, 50 rows from position 100, %.0f ms" % ms)
 
     # Without "limit" the board sends 25 rows (DB_DEFAULT_ROWS), the same
@@ -274,7 +274,7 @@ def main():
     everything_sql = RANGE_SQL.replace("where name between ? and ? ", "").replace("order by name, year, state", "order by total_babies desc, name desc, year desc, state desc")
     want = [list(row) for row in database.execute(everything_sql)]
     for offset in (0, len(want) - 100):
-        status, _, body, ms = request(base, "/api/names?" + urllib.parse.urlencode({"prefix": "", "sort": 3, "desc": 1, "offset": offset, "limit": 200}))
+        status, _, body, ms = request(base, "/api/names?" + urllib.parse.urlencode({"startswith": "", "sort": 3, "desc": 1, "offset": offset, "limit": 200}))
         data = json.loads(body)
         check(status == 200 and data.get("rows") == want[offset:offset + 200] and data.get("more") is (offset + 200 < len(want)),
               "the whole table by total, largest first, from position %d: %d rows in %.0f ms" % (offset, len(data.get("rows", [])), ms))
@@ -293,9 +293,9 @@ def main():
     for prefix in PREFIXES:
         want = [list(row) for row in database.execute(RANGE_SQL.replace("between ? and ?", "like ? escape '\\'"), (prefix + "%",))]
         try:
-            got, pages, first, total, size = fetch_all(base, {"prefix": prefix})
+            got, pages, first, total, size = fetch_all(base, {"startswith": prefix})
             check(got == want, "%-12s %5d rows, %2d pages, first page %4.0f ms" % (prefix + "*", len(got), pages, first))
-            count = fetch_count(base, {"prefix": prefix})
+            count = fetch_count(base, {"startswith": prefix})
             check(count == len(want), "%-12s counted as %d" % (prefix + "*", count))
         except Exception as error:
             check(False, "%s*: %s" % (prefix, error))
@@ -303,7 +303,7 @@ def main():
     # --- Responses ---------------------------------------------------------
     print("\nResponses")
 
-    # Neither a prefix nor a from/to pair: the board must refuse with status
+    # Neither startswith nor a from/to pair: the board must refuse with status
     # 400 and still answer in JSON, so the page can display the reason.
     status, headers, body, _ = request(base, "/api/names")
     check(status == 400 and "error" in json.loads(body), "a request without a range is answered 400 with an error")

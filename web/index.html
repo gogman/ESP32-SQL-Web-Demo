@@ -52,7 +52,7 @@ applyTheme(storedTheme());
 <h2 class='card-title h5 mb-3'>Query Baby Names Database</h2>
 <form method='GET' action='/' id='prefixForm' class='row g-2 align-items-center mb-3'>
 <label for='prefix' class='col-sm-3 col-form-label'>Names Starting With</label>
-<div class='col-sm'><input type='text' class='form-control' name='prefix' id='prefix'></div>
+<div class='col-sm'><input type='text' class='form-control' name='startswith' id='prefix'></div>
 <div class='col-sm-auto'><button type='submit' class='btn btn-primary'>Search</button></div>
 </form>
 <form method='GET' action='/' id='rangeForm' class='row g-2 align-items-center'>
@@ -141,7 +141,7 @@ function showProblem(text) {
 
 function readAddress() {
   var address = new URLSearchParams(location.search);
-  if (address.has('prefix')) return { prefix: address.get('prefix') };
+  if (address.has('startswith')) return { startswith: address.get('startswith') };
   if (address.has('from') || address.has('to')) return { from: address.get('from') || '', to: address.get('to') || '' };
   return null;
 }
@@ -162,12 +162,12 @@ function fetchJson(url) {
   });
 }
 
-function startSearch(newQuery) {
+function startSearch(newQuery, startPage) {
   query = newQuery;
   searchId++;
   cursors = [null];
   starts = [0];
-  page = 0;
+  page = startPage || 0;
   total = null;
   element('results').hidden = !query;
   if (!query) {
@@ -176,8 +176,8 @@ function startSearch(newQuery) {
     return;
   }
 
-  if ('prefix' in query) {
-    element('prefix').value = query.prefix;
+  if ('startswith' in query) {
+    element('prefix').value = query.startswith;
   } else {
     element('from').value = query.from;
     element('to').value = query.to;
@@ -339,7 +339,7 @@ function search(newQuery) {
 
 element('prefixForm').onsubmit = function (event) {
   event.preventDefault();
-  search({ prefix: element('prefix').value });
+  search({ startswith: element('prefix').value });
 };
 
 element('rangeForm').onsubmit = function (event) {
@@ -369,9 +369,10 @@ PAGERS.forEach(function (id) { element(id).onclick = pagerClick; });
 PER_PAGE.forEach(function (id) {
   element(id).value = perPage;
   element(id).onchange = function () {
+    var firstRow = starts[page] || 0;
     perPage = Number(element(id).value);
     PER_PAGE.forEach(function (other) { element(other).value = perPage; });
-    if (query) startSearch(query);
+    if (query) startSearch(query, Math.floor(firstRow / perPage));
   };
 });
 
@@ -393,7 +394,7 @@ element('head').onclick = function (event) {
     sortDescending = false;
   }
   showSortArrow();
-  if (query) startSearch(query);
+  if (query) startSearch(query, page);
 };
 
 fetchJson('/api/status')
