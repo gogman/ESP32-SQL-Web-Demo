@@ -108,6 +108,8 @@ All addresses accept `GET` only.
 | `from`, `to` | The first and last name of a range, both included |
 | `after_name`, `after_year`, `after_state` | Optional. The last row of the previous page; the answer continues after it |
 | `offset` | Optional, and only used when no cursor is given. The number of rows of the range before the page. Reaches any page directly, at a cost that grows with the number |
+| `sort` | Optional. The column to sort the whole range by, as its position in a row: `0` year, `1` state, `2` name, `3` total babies, `4` primary sex, `5` ratio, `6` per 100k. Pages of a sorted range are found by `offset`; a cursor is ignored. Anything but `0` to `6` is answered 400 |
+| `desc` | Optional, with `sort`. `1` puts the largest first |
 | `v` | Optional. The database version from `/api/status`. Its presence makes the answer cacheable |
 
 The answer has this form:
@@ -214,6 +216,33 @@ A cursor only leads to the page after one already seen. To reach any other page,
 
 The page therefore uses a cursor whenever it has one and a position only when it does not.
 
+### Sorting on the board
+
+With `sort`, the board orders the whole range by one column before cutting out a page. Rows with equal values are put in name order. Descending is exactly the ascending order backwards.
+
+SQLite is not asked to do this. Both ways of having SQLite sort were tried on the board and neither is usable here:
+
+- A query with `order by ... limit ...` makes SQLite sort in a temporary table. In this build of the library that table has a cache of less than one page, and sorting 330 rows took between 1 and 110 seconds depending on the direction.
+- A query with `order by` and no limit uses SQLite's merge sorter. It took about 0.7 ms per row, which would be over 15 s for the whole table, on every page. Above 1 MB of data it also writes temporary files to the filesystem, and that crashed the firmware (a division by zero inside LittleFS).
+
+So the firmware sorts by itself, in `db_mgr::getSortedPage()`:
+
+1. **Load.** The whole range is read once in name order, with the ordinary position query and no limit. Every row is stored in memory as the same JSON text a normal page would contain, one after another.
+2. **Sort.** A second, small table has one entry per row: where the row's text is, and its value in the chosen column. The value is read back out of the JSON text. Only this table is sorted; the text never moves.
+3. **Serve.** A page is copied straight out of memory, walking the table forwards, or backwards for descending.
+
+One range is kept at a time, until a different one is sorted. That makes the cost uneven:
+
+| Request | Cost |
+|---|---|
+| First sorted request for a range | Reads every row: 0.3 s for 1,553 rows, 0.5 s for 3,594, about 3.1 s for the whole table |
+| A different column, same range | Sorts again only: 0.2 to 0.6 s for the whole table |
+| Another page, or the other direction | 0.05 to 0.1 s, wherever the page is |
+
+The memory comes from PSRAM: about 62 bytes per row, 1.6 MB for the whole table, out of 4 MB. If it cannot be had, the request is answered with an error and nothing is kept. A board without PSRAM sorts ranges of up to 48 KiB of row text only.
+
+Two simplifications, neither visible with the current data: the two decimal columns are compared as they are shown, rounded to two places, and the text columns (state and primary sex) are compared by their first eight bytes.
+
 ### Output
 
 Rows are written as JSON directly into a fixed 1400-byte buffer inside the database object. When the buffer is full it is handed to the web handler, which sends it, and filling starts again. A query therefore allocates no memory of its own, and a result of any size can be streamed. Numbers are formatted by small hand-written routines, not `printf`. The two decimal columns are rounded to two places.
@@ -288,7 +317,7 @@ Two things to keep in mind when changing the markup:
 | `pageSize` | How many rows the board puts on a full page. Learned from the first page when more rows follow; `0` until then |
 | `total` | The number of rows in the whole search, from `/api/count`; `null` until it arrives |
 | `pageRows`, `pageMore`, `pageError`, `pageLoaded` | The rows of the page being shown, in the order the board sent them; whether more follow; an error text; and whether the page has arrived |
-| `sortColumn`, `sortDescending` | The column the rows on screen are sorted by (`-1` for none) and the direction |
+| `sortColumn`, `sortDescending` | The column the search is sorted by (`-1` for none, which means name order) and the direction |
 | `dbVersion` | The database version from `/api/status`, added to every data request as `v` so the browser can cache the answers |
 
 ### Script functions
@@ -314,9 +343,9 @@ Two things to keep in mind when changing the markup:
 - **`addPageItem(list, label, target, enabled, name)`** adds one item to a pager. The current page becomes a highlighted label; every other item becomes a button that carries its target in `data-page`.
 - **`pagerClick(event)`** handles a click anywhere in a pager: it reads the target from the button, sets `page` and calls `load()`.
 - **`showStatus()`** writes the status line: an error if there was one, "No records found" for an empty result, otherwise "Rows 201 to 400 of 1234". Until the total arrives the "of" part is left out, and the last page is marked "(end)".
-- **`compareValues(a, b)`** compares two cell values for sorting: numbers numerically, everything else as text without regard to case.
+- **`showSortArrow()`** redraws the headings, with an up or down arrow on the column sorted by.
 - **`render()`** draws the table.
-  - It sorts a copy of the rows if a sort column is set, and redraws the headings with an up or down arrow on that column.
+  - The rows are shown in the order the board sent them; the page itself sorts nothing.
   - Cells are created through the DOM and filled with `textContent`, so a name containing `<` or `&` is shown as it is.
   - Columns 5 and 6 (ratio and rate per 100k) are shown with exactly two decimals. The board sends them without trailing zeros, so `80.8` arrives and is shown as `80.80`. A type check guards against `null`, which the board sends for a value that cannot be written as a number.
 - **`search(newQuery)`** is what the forms call: it puts the search into the address bar and starts it.
@@ -339,9 +368,9 @@ Each item only changes `page` and calls `load()`. A page number has a cursor if 
 
 ### Sorting
 
-Clicking a column heading sorts the rows on screen by that column. A second click reverses the order and a third restores the order the board sent. The chosen sort is kept when moving to another page or starting another search.
+Clicking a column heading sorts the whole search by that column, not just the rows on screen: the search starts again from its first page, with `sort` in every request. A second click reverses the order and a third returns to name order. The chosen sort is kept when starting another search.
 
-Sorting rearranges only the rows currently shown, up to 200. It does not sort the whole result. Paging is unaffected by it: the cursor for the next page is always taken from the board's own order, not from what is on screen.
+While a sort is on, pages are requested by position (`offset`) and cursors are not used, because a cursor only means something in name order. The first sorted page of a large search takes noticeably longer than the ones after it; see [Sorting on the board](#sorting-on-the-board).
 
 ### Startup sequence
 
@@ -363,9 +392,9 @@ Run these from the project folder.
 
 Both test scripts default to `http://esp32.local`. Passing the board's IP address avoids a name lookup of about a second per request on Windows. Both need only the Python standard library. On this PC, Python is the one that comes with PlatformIO: `%USERPROFILE%\.platformio\penv\Scripts\python.exe`.
 
-**`tools/test_api.py`** fetches every page of a set of ranges and prefixes and compares the rows, and the counts, with the same queries run on `data/babyname.db`. It also checks the error answers, the caching headers, that the stylesheet arrives compressed and unpacks to `web/bootstrap.min.css`, that the database file cannot be fetched by address, and pages requested by position, including the last page of the whole table. It makes 51 checks.
+**`tools/test_api.py`** fetches every page of a set of ranges and prefixes and compares the rows, and the counts, with the same queries run on `data/babyname.db`. It also checks the error answers, the caching headers, that the stylesheet arrives compressed and unpacks to `web/bootstrap.min.css`, that the database file cannot be fetched by address, pages requested by position, including the last page of the whole table, and sorted pages: three ranges by every column in both directions, and the whole table, each compared with the same sort done by SQLite on the PC. It makes 60 checks.
 
-**`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display, that the Bootstrap stylesheet is applied, that the crash notice matches what the board reports, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, the first and last buttons, the page numbers and both pagers, sorting, searching from both forms without a reload, an empty result, and the back button. It makes 49 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
+**`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display, that the Bootstrap stylesheet is applied, that the crash notice matches what the board reports, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, the first and last buttons, the page numbers and both pagers, sorting the whole search by a column in both directions and across pages and searches, searching from both forms without a reload, an empty result, and the back button. It makes 54 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
 
 Both passed in full against the firmware described here.
 
@@ -463,6 +492,10 @@ Current figures on the board, averaged over 111 full 200-row pages:
 | Count of 3,594 rows | about 92 ms |
 | Count of the whole table (25,192 rows) | about 0.7 s |
 | Last page of the whole table, by position | about 0.7 s, measured from the PC |
+| First sorted page of the whole table | about 3.1 s, measured from the PC |
+| Any later sorted page of the whole table, including the last | 0.05 to 0.1 s, measured from the PC |
+| The whole table sorted by a different column | 0.2 to 0.6 s, measured from the PC |
+| First sorted page of `S`..`T` (1,553 rows) / `A`..`B` (3,594 rows) | about 0.3 s / 0.5 s, measured from the PC |
 
 A page takes the same time whether it is the first or a deep one.
 
@@ -488,12 +521,13 @@ That is a gain of about 2.5% on rows, none on counting, for 122 KB more flash. I
 **Reliability**
 
 - The fallback access point is only started at boot. If the WiFi network disappears while the board is running, the board relies on the framework reconnecting by itself.
-- The server answers one request at a time. A slow request delays everyone else. The largest single requests are the count for a search that matches the whole table, and a jump to the last page of such a search, about 0.7 s each.
+- The server answers one request at a time. A slow request delays everyone else. The largest single request is the first sorted page of a search that matches the whole table, about 3 s. The count for such a search, and a jump to its last page in name order, take about 0.7 s each.
 - Serial uploads were unreliable on this board earlier in development. At times the board did not enter download mode without the BOOT button held, and at other times it stayed in download mode and did not start. All recent uploads worked unattended; the cause was never identified.
 
 **The page**
 
-- Sorting applies to the rows on screen only, not to the whole result.
+- The sort order is not part of the address, so a bookmarked or reloaded search comes back in name order.
+- A sorted search keeps a copy of its rows in the board's memory until a different search is sorted, up to 1.6 MB for the whole table.
 - The page needs JavaScript. Without it the forms submit normally but no results are shown.
 - `tools/test_page.py` looks for the browser in the usual Windows install folders. Elsewhere its path has to be given as the second argument.
 
@@ -517,13 +551,12 @@ That is a gain of about 2.5% on rows, none on counting, for 122 KB more flash. I
 In rough order of value.
 
 1. **Give the board a fixed address.** Either fill in `STATIC_IP` and `STATIC_GATEWAY` in `include/Definitions.h` or reserve the address on the router. This avoids the name lookup and the changing address.
-2. **Sort the whole result on the board.** Sorting by another column across all pages would need the board to order the range itself, and paging by a different key. It is only worth doing if sorting the visible page proves too limited.
-3. **Turn the timing log off** when it is no longer needed, or enable it only in the Debug build.
-4. **Handle a lost WiFi connection at run time**, falling back to the access point after a period without the network.
-5. **Compress the page.** Embedding a gzip-compressed copy would cut the 9 KB transfer by more than half. The gain is small because the page is cached.
-6. **Run the tests automatically.** Both test scripts need a board on the network; a single command that uploads, waits for the board and runs both would make that routine.
-7. **Reconsider updates over WiFi.** They were added and removed during development because they need two firmware slots, which leaves about 1.1 MB for the filesystem. They would remove the dependence on the serial upload.
+2. **Turn the timing log off** when it is no longer needed, or enable it only in the Debug build.
+3. **Handle a lost WiFi connection at run time**, falling back to the access point after a period without the network.
+4. **Compress the page.** Embedding a gzip-compressed copy would cut the 9 KB transfer by more than half. The gain is small because the page is cached.
+5. **Run the tests automatically.** Both test scripts need a board on the network; a single command that uploads, waits for the board and runs both would make that routine.
+6. **Reconsider updates over WiFi.** They were added and removed during development because they need two firmware slots, which leaves about 1.1 MB for the filesystem. They would remove the dependence on the serial upload.
 
 Not on this list, because the project is a read-only demonstration: writing to the database from the board, a login, and encryption. See [Purpose](#purpose).
 
-Done since the first version of this document: version control, a content-based cache label for the page, no automatic formatting of the filesystem, an automated browser test, a row total, searching without a reload, column sorting, first and last buttons, removal of the file listing, the Bootstrap stylesheet and pagination, the crash-dump notice, the `-O2` measurement, and the crash-dump procedure.
+Done since the first version of this document: version control, a content-based cache label for the page, no automatic formatting of the filesystem, an automated browser test, a row total, searching without a reload, column sorting (now of the whole search, on the board), first and last buttons, removal of the file listing, the Bootstrap stylesheet and pagination, the crash-dump notice, the `-O2` measurement, and the crash-dump procedure.

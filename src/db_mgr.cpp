@@ -9,6 +9,7 @@
 
 #include "db_mgr.h"
 #include <math.h>
+#include <algorithm>
 
 /*
  * The query that fetches rows.
@@ -465,6 +466,7 @@ bool db_mgr::open(const char *filename, int cacheKiB)
  */
 void db_mgr::close()
 {
+    dropSortedRange();
     sqlite3_finalize(pageStmt);
     sqlite3_finalize(offsetStmt);
     sqlite3_finalize(countStmt);
@@ -716,4 +718,297 @@ bool db_mgr::getPageAt(const char *from, const char *to, long offset, int limit,
 
     /* A negative position makes no sense; treat it as the start of the range. */
     return writePage(offsetStmt, bindOffsetPage(from, to, max(offset, 0L), limit), limit, emit);
+}
+
+/* ------------------------------------------------------------------ */
+/* Sorted pages                                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The most memory a kept range may take on a board without PSRAM. There the
+ * memory comes from the small internal heap, which the network also lives
+ * on, so only modest ranges are sorted. With PSRAM there is no fixed limit;
+ * the range is refused only if the memory cannot be had.
+ */
+static const size_t SORT_BYTES_WITHOUT_PSRAM = 48 * 1024;
+
+/* Which columns hold text. All others hold numbers. */
+static bool isTextColumn(int column)
+{
+    return column == 1 || column == 2 || column == 4;
+}
+
+/*
+ * Changes the size of a block of memory for the kept range, in PSRAM when
+ * the board has it. Like realloc(): a null pointer allocates, and on
+ * failure null is returned and the old block is untouched.
+ */
+static void *sortMemory(void *block, size_t size)
+{
+    return psramFound() ? ps_realloc(block, size) : realloc(block, size);
+}
+
+/*
+ * Finds where a column's value starts inside the JSON text of one row,
+ * for example inside [2015,"US","Mar",12,"F",100,0.3].
+ *
+ * The values before it are stepped over one by one. A text value has to be
+ * walked through to its closing quote, minding that a backslash makes the
+ * next character part of the text; a number simply ends at the comma.
+ */
+static const char *columnValue(const char *row, int column)
+{
+    const char *p = row + 1;
+
+    for (int i = 0; i < column; i++)
+    {
+        if (*p == '"')
+        {
+            for (p++; *p != '"'; p++)
+            {
+                if (*p == '\\')
+                    p++;
+            }
+        }
+
+        while (*p != ',')
+            p++;
+
+        p++;
+    }
+
+    return p;
+}
+
+void db_mgr::dropSortedRange()
+{
+    free(sortedRows);
+    free(sortedEntries);
+    sortedRows = nullptr;
+    sortedEntries = nullptr;
+    sortedBytes = 0;
+    sortedCount = 0;
+    sortedColumn = -1;
+    sortedValid = false;
+}
+
+/*
+ * Reads the whole range into memory, unless it is the one already there.
+ *
+ * Each row is turned into its JSON text by the same writeRow() that
+ * produces normal pages, so a sorted page looks exactly like any other.
+ * The text is collected through a ChunkWriter whose "sink" appends to
+ * sortedRows instead of sending anything; flushing after every row tells
+ * where one row ends and the next begins.
+ */
+bool db_mgr::loadSortedRange(const char *from, const char *to)
+{
+    if (sortedValid && sortedFrom == from && sortedTo == to)
+        return true;
+
+    dropSortedRange();
+
+    StmtReset reset{offsetStmt};
+
+    /*
+     * The position query, from the start of the range and without a limit:
+     * bindOffsetPage() asks for limit + 1 rows, and -1 means "all" to SQLite.
+     */
+    if (!bindOffsetPage(from, to, 0, -2))
+        return false;
+
+    size_t rowCapacity = 0;
+    uint32_t entryCapacity = 0;
+    bool enoughMemory = true;
+
+    /* Appends a piece of text to sortedRows, doubling the block when it is full. */
+    const ChunkSink append = [&](const char *data, size_t length)
+    {
+        if (!enoughMemory)
+            return;
+
+        if (sortedBytes + length > rowCapacity)
+        {
+            const size_t wanted = max(max(rowCapacity * 2, (size_t)8192), sortedBytes + length);
+            char *grown = (!psramFound() && wanted > SORT_BYTES_WITHOUT_PSRAM) ? nullptr : (char *)sortMemory(sortedRows, wanted);
+
+            if (!grown)
+            {
+                enoughMemory = false;
+                return;
+            }
+
+            sortedRows = grown;
+            rowCapacity = wanted;
+        }
+
+        memcpy(sortedRows + sortedBytes, data, length);
+        sortedBytes += length;
+    };
+
+    ChunkWriter out(chunk, CHUNK_SIZE, append);
+    int result_code = SQLITE_DONE;
+
+    while (enoughMemory && (result_code = sqlite3_step(offsetStmt)) == SQLITE_ROW)
+    {
+        if (sortedCount == entryCapacity)
+        {
+            const uint32_t wanted = max(entryCapacity * 2, (uint32_t)256);
+            SortEntry *grown = (SortEntry *)sortMemory(sortedEntries, wanted * sizeof(SortEntry));
+
+            if (!grown)
+            {
+                enoughMemory = false;
+                break;
+            }
+
+            sortedEntries = grown;
+            entryCapacity = wanted;
+        }
+
+        const size_t start = sortedBytes;
+        writeRow(out, offsetStmt);
+        out.flush();
+
+        sortedEntries[sortedCount].offset = start;
+        sortedEntries[sortedCount].length = sortedBytes - start;
+        sortedCount++;
+    }
+
+    if (!enoughMemory)
+    {
+        dropSortedRange();
+        setError("Not enough memory to sort this many rows");
+        return false;
+    }
+
+    if (result_code != SQLITE_DONE)
+    {
+        setErrorFromDb();
+        dropSortedRange();
+        return false;
+    }
+
+    sortedFrom = from;
+    sortedTo = to;
+    sortedValid = true;
+    return true;
+}
+
+/*
+ * Orders the entries of the kept range by one column.
+ *
+ * First every entry gets its key: the row's value in that column, read back
+ * out of the row's JSON text. Then the entries are sorted by key. Rows with
+ * equal keys are ordered by their position in sortedRows, which is name
+ * order, because that is how they were read.
+ *
+ * The name column needs no keys at all: name order is position order.
+ */
+void db_mgr::sortKeptRange(int column)
+{
+    if (sortedColumn == column)
+        return;
+
+    const bool text = isTextColumn(column);
+
+    for (uint32_t i = 0; i < sortedCount && column != 2; i++)
+    {
+        SortEntry &entry = sortedEntries[i];
+        const char *value = columnValue(sortedRows + entry.offset, column);
+
+        if (text)
+        {
+            /*
+             * Pack up to eight bytes of the text, first byte highest, so
+             * that the integers compare the way the texts do. A value that
+             * is not text (null) gets the lowest key.
+             */
+            uint64_t packed = 0;
+
+            if (*value == '"')
+            {
+                value++;
+                for (int byte = 0; byte < 8; byte++)
+                {
+                    packed <<= 8;
+                    if (*value != '"')
+                        packed |= (uint8_t)*value++;
+                }
+            }
+
+            entry.key.text = packed;
+        }
+        else
+        {
+            /* A number ends at the comma or bracket after it, which is where strtod() stops. null sorts first. */
+            entry.key.number = (*value == '-' || (*value >= '0' && *value <= '9')) ? strtod(value, nullptr) : -INFINITY;
+        }
+    }
+
+    if (column == 2)
+    {
+        std::sort(sortedEntries, sortedEntries + sortedCount,
+                  [](const SortEntry &a, const SortEntry &b) { return a.offset < b.offset; });
+    }
+    else if (text)
+    {
+        std::sort(sortedEntries, sortedEntries + sortedCount,
+                  [](const SortEntry &a, const SortEntry &b)
+                  { return a.key.text != b.key.text ? a.key.text < b.key.text : a.offset < b.offset; });
+    }
+    else
+    {
+        std::sort(sortedEntries, sortedEntries + sortedCount,
+                  [](const SortEntry &a, const SortEntry &b)
+                  { return a.key.number != b.key.number ? a.key.number < b.key.number : a.offset < b.offset; });
+    }
+
+    sortedColumn = column;
+}
+
+bool db_mgr::getSortedPage(const char *from, const char *to, int column, bool descending, long offset, int limit, const ChunkSink &emit)
+{
+    if (!db)
+    {
+        setError("Database is not open");
+        return false;
+    }
+
+    if (column < 0 || column >= COLUMN_COUNT)
+    {
+        setError("No such column to sort by");
+        return false;
+    }
+
+    /* Nothing has been emitted yet, so on failure the caller can still answer in its own way. */
+    if (!loadSortedRange(from, to))
+        return false;
+
+    sortKeptRange(column);
+
+    /* The page: rows first..last-1 of the sorted order, counted from the far end when descending. */
+    const uint32_t first = min((uint32_t)max(offset, 0L), sortedCount);
+    const uint32_t last = min(first + (uint32_t)max(limit, 1), sortedCount);
+
+    ChunkWriter out(chunk, CHUNK_SIZE, emit);
+    out.put("{\"rows\":[");
+
+    for (uint32_t i = first; i < last; i++)
+    {
+        const SortEntry &entry = sortedEntries[descending ? sortedCount - 1 - i : i];
+
+        if (i > first)
+            out.put(',');
+
+        out.put(sortedRows + entry.offset, entry.length);
+    }
+
+    if (last < sortedCount)
+        out.put("],\"more\":true}");
+    else
+        out.put("],\"more\":false}");
+
+    out.flush();
+    return true;
 }

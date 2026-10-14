@@ -11,6 +11,8 @@
  * - The SQL queries are compiled once, in open(), and reused for every request.
  * - Rows are written into a fixed buffer that is part of the object, so a
  *   query allocates no memory of its own and cannot fragment the heap.
+ * - The one exception is sorting by a column, which keeps a copy of the
+ *   searched range in memory (see getSortedPage()).
  * - Paging continues from a "cursor" (the last row already shown) instead
  *   of skipping rows, so page 100 costs the same as page 1.
  *
@@ -148,6 +150,45 @@ public:
      */
     bool getPageAt(const char *from, const char *to, long offset, int limit, const ChunkSink &emit);
 
+    /* How many columns a row has, and so how many there are to sort by. */
+    static const int COLUMN_COUNT = 7;
+
+    /*
+     * Produces a page of the range in a different order: sorted by one of
+     * the columns instead of by name. The document is the same as getPage()'s.
+     *
+     * column      Which column to sort by, as its position in a row: 0 is
+     *             the year, 1 the state, and so on up to COLUMN_COUNT - 1.
+     * descending  true for largest first. Rows with equal values are put in
+     *             name order, reversed as well when descending, so the
+     *             descending order is exactly the ascending one backwards.
+     * offset      The number of rows of the sorted range before the page.
+     *
+     * SQLite is not asked to sort. On this board its sorter is slow, and
+     * for a large range it writes temporary files, which the filesystem
+     * setup here cannot take. Instead the whole range is read once, in name
+     * order, and kept in memory as ready-made JSON rows; the sorting is done
+     * here, and every page is copied out of that memory.
+     *
+     * The cost is therefore uneven:
+     *
+     * - The first sorted request for a range reads all of its rows: a
+     *   fraction of a second for a few thousand, several seconds for the
+     *   whole table.
+     * - A different column for the same range only sorts again.
+     * - Another page, or the other direction, costs next to nothing.
+     *
+     * One range is kept at a time, until a different one is sorted. It takes
+     * about 50 bytes per row. If that much memory cannot be had, the method
+     * fails with a message saying so, before any output.
+     *
+     * The decimal columns are compared as they are shown, rounded to two
+     * places, and text columns by their first eight bytes.
+     *
+     * Everything else is as described for getPage().
+     */
+    bool getSortedPage(const char *from, const char *to, int column, bool descending, long offset, int limit, const ChunkSink &emit);
+
     /*
      * Counts the names in a range, with the same meaning of from and to as
      * in getPage().
@@ -177,6 +218,41 @@ private:
     /* The compiled query for a page found by position, used by getPageAt(). */
     sqlite3_stmt *offsetStmt = nullptr;
 
+    /*
+     * One row of the range kept for sorting: where its JSON text is in
+     * sortedRows, how long it is, and its value in the column currently
+     * sorted by. The value is a number or, for a text column, the first
+     * eight bytes of the text packed into an integer so that comparing the
+     * integers compares the texts.
+     */
+    struct SortEntry
+    {
+        union
+        {
+            double number;
+            uint64_t text;
+        } key;
+        uint32_t offset;
+        uint32_t length;
+    };
+
+    /*
+     * The range kept for sorting (see getSortedPage()).
+     *
+     * sortedRows holds the JSON text of all its rows one after another, in
+     * name order. sortedEntries has one entry per row and is what gets
+     * sorted; the text itself never moves. sortedColumn is the column the
+     * entries are currently ordered by, or -1 right after loading.
+     */
+    bool sortedValid = false;
+    String sortedFrom;
+    String sortedTo;
+    char *sortedRows = nullptr;
+    size_t sortedBytes = 0;
+    SortEntry *sortedEntries = nullptr;
+    uint32_t sortedCount = 0;
+    int sortedColumn = -1;
+
     /* The compiled counting query, prepared in open() and reused by every getCount(). */
     sqlite3_stmt *countStmt = nullptr;
 
@@ -205,6 +281,15 @@ private:
 
     /* Writes the complete JSON document for one page from an already bound statement. */
     bool writePage(sqlite3_stmt *stmt, bool bound, int limit, const ChunkSink &emit);
+
+    /* Makes the given range the one kept for sorting, reading it if it is not already. */
+    bool loadSortedRange(const char *from, const char *to);
+
+    /* Orders the kept range by a column, unless it already is. */
+    void sortKeptRange(int column);
+
+    /* Releases the kept range. */
+    void dropSortedRange();
 
     /* Stores a message for lastError(), cutting it short if it is too long. */
     void setError(const char *message);

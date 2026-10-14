@@ -315,6 +315,12 @@ def click_header(browser, column):
     browser.run("document.getElementById('head').rows[0].cells[%d].click()" % column)
 
 
+def wait_table(browser, rows):
+    """Waits for the table to show exactly the given database rows and reports whether it did."""
+    expected = json.dumps(as_shown(rows), separators=(",", ":"), ensure_ascii=False)
+    return browser.wait_for("JSON.stringify(%s) == %s" % (TABLE, json.dumps(expected)))
+
+
 def wait_status(browser, text):
     """Waits for the status line to read exactly the given text and reports whether it did."""
     return browser.wait_for("%s == %s" % (STATUS, json.dumps(text)))
@@ -449,34 +455,46 @@ def main():
               "'first' returns to the first page")
 
         # --- Sorting -------------------------------------------------------------
-        # Sorting rearranges the rows on screen only. Both the page and Python sort
-        # "stably" (rows that compare equal keep their order), so the expected
-        # result can be computed here.
-        print("\nSorting the rows shown")
+        # Sorting is done by the board and covers the whole search, not just the
+        # rows on screen. The expected order is worked out here: Python sorts
+        # "stably", so rows with equal values stay in name order, which is the
+        # board's rule too; descending is that order backwards.
+        print("\nSorting the whole search")
         browser.open(base + "/?prefix=Mar")
         wait_status(browser, first_status)
-        shown = mar[:page_size]
+        by_total = sorted(mar, key=lambda row: row[3])
+        by_sex = sorted(mar, key=lambda row: row[4])
 
         click_header(browser, 3)
-        check(browser.run(TABLE) == as_shown(sorted(shown, key=lambda row: row[3])), "a click on 'Total babies' sorts ascending")
+        check(wait_table(browser, by_total[:page_size]), "a click on 'Total babies' shows the %d smallest of all %d rows" % (page_size, len(mar)))
         check(browser.run(HEADERS)[3] == "Total babies \u25b2", "the column heading shows an up arrow")
+        check(browser.run(STATUS) == first_status, "the status line still reads: " + first_status)
+
+        click(browser, "next")
+        check(wait_table(browser, by_total[page_size:]) and wait_status(browser, second_status), "'next' shows the rest of the sorted rows")
+        click(browser, "last")
+        click(browser, "first")
+        check(wait_table(browser, by_total[:page_size]), "'first' returns to the start of the sorted rows")
 
         click_header(browser, 3)
-        check(browser.run(TABLE) == as_shown(sorted(shown, key=lambda row: row[3], reverse=True)), "a second click sorts descending")
+        check(wait_table(browser, by_total[::-1][:page_size]), "a second click shows the %d largest" % page_size)
         check(browser.run(HEADERS)[3] == "Total babies \u25bc", "the column heading shows a down arrow")
 
         click_header(browser, 3)
-        check(browser.run(TABLE) == as_shown(shown), "a third click restores the original order")
+        check(wait_table(browser, mar[:page_size]), "a third click restores name order")
         check(browser.run(HEADERS)[3] == "Total babies", "the arrow is gone")
 
         click_header(browser, 4)
-        check(browser.run(TABLE) == as_shown(sorted(shown, key=lambda row: row[4])), "a text column sorts too ('Primary Sex')")
+        check(wait_table(browser, by_sex[:page_size]), "a text column sorts too ('Primary Sex')")
 
-        click(browser, "next")
-        check(wait_status(browser, second_status) and browser.run(TABLE) == as_shown(sorted(mar[page_size:], key=lambda row: row[4])),
-              "the sort order is kept when moving to the next page")
+        # The sort stays on for the next search.
+        browser.run("document.getElementById('from').value = 'S'; document.getElementById('to').value = 'T'; document.getElementById('rangeForm').requestSubmit()")
+        check(wait_table(browser, sorted(s_to_t, key=lambda row: row[4])[:page_size]), "the sort order is kept for the next search")
+        click(browser, "last")
+        check(wait_table(browser, sorted(s_to_t, key=lambda row: row[4])[last_start:]), "and 'last' shows the end of that sorted search")
         click_header(browser, 4)
         click_header(browser, 4)
+        check(wait_table(browser, s_to_t[:page_size]), "two more clicks restore name order")
 
         # --- Searching without reloading the page -------------------------------
         # A marker is stored in the page. A reload would wipe it out, so finding

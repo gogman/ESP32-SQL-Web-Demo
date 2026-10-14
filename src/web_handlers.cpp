@@ -248,13 +248,18 @@ static const char *dataCacheControl()
  *                        number of rows of the range before this page. It
  *                        reaches any page directly, at a cost that grows with
  *                        the number; the page uses it for jumps such as "last".
+ *   sort                 Optional. The column to sort the whole range by, as
+ *                        its position in a row, 0 to 6. Pages of a sorted
+ *                        range are found by offset only; a cursor is ignored.
+ *   desc                 Optional, with sort. "1" sorts largest first.
  *   v                    Optional. The database version from /api/status.
  *                        Its value is not examined; its presence marks the
  *                        response as safe to cache.
  *
  * The answer is the document described at db_mgr::getPage(), with status
- * 200. A request without a range gets 400, a database failure 500, both
- * with a {"error": ...} document.
+ * 200. A request without a range, or with a sort column that does not
+ * exist, gets 400, a database failure 500, both with a {"error": ...}
+ * document.
  */
 static void handleNamesApi()
 {
@@ -282,7 +287,23 @@ static void handleNamesApi()
   const String afterName = server->arg("after_name");
   const String afterState = server->arg("after_state");
   const db_mgr::Cursor after = {afterName.c_str(), server->arg("after_year").toDouble(), afterState.c_str()};
-  const bool hasCursor = server->hasArg("after_name");
+  /*
+   * The sort order, if one was asked for. The column must be a single digit
+   * within range; anything else is refused rather than guessed at.
+   */
+  const bool hasSort = server->hasArg("sort");
+  const String sortArg = server->arg("sort");
+  const int sortColumn = sortArg.length() == 1 ? sortArg[0] - '0' : -1;
+  const bool descending = server->arg("desc") == "1";
+
+  if (hasSort && (sortColumn < 0 || sortColumn >= db_mgr::COLUMN_COUNT))
+  {
+    sendJsonError(400, "sort must be a column number from 0 to 6");
+    return;
+  }
+
+  /* A cursor only means something in the default order, so sorting switches it off. */
+  const bool hasCursor = !hasSort && server->hasArg("after_name");
 
   /*
    * The alternative to a cursor: the position of the page in the range.
@@ -334,8 +355,10 @@ static void handleNamesApi()
                                     bytes += length;
                                     chunks++; };
 
-  /* By position if one was asked for, otherwise by cursor (or the first page). */
-  const bool result = hasOffset
+  /* Sorted if asked for; else by position if one was given; otherwise by cursor (or the first page). */
+  const bool result = hasSort
+                          ? database->getSortedPage(from.c_str(), to.c_str(), sortColumn, descending, offset, DB_PAGE_ROWS, sendPiece)
+                      : hasOffset
                           ? database->getPageAt(from.c_str(), to.c_str(), offset, DB_PAGE_ROWS, sendPiece)
                           : database->getPage(from.c_str(), to.c_str(), hasCursor ? &after : nullptr, DB_PAGE_ROWS, sendPiece);
 
@@ -359,9 +382,9 @@ static void handleNamesApi()
      * the sending time is subtracted to leave the database's share: running
      * the query and writing the rows as JSON.
      */
-    Serial.printf("Names '%s'..'%s' after '%s' offset %ld %s: database %.2f ms, sending %.2f ms (%u bytes in %u chunks), whole response %.2f ms\n",
+    Serial.printf("Names '%s'..'%s' after '%s' offset %ld sort %d%s %s: database %.2f ms, sending %.2f ms (%u bytes in %u chunks), whole response %.2f ms\n",
                   from.c_str(), server->hasArg("prefix") ? "(prefix)" : to.c_str(), afterName.c_str(),
-                  hasOffset ? offset : 0L, result ? "ok" : database->lastError(),
+                  hasOffset ? offset : 0L, hasSort ? sortColumn : -1, descending ? " desc" : "", result ? "ok" : database->lastError(),
                   (pageMicros - sendMicros) / 1000.0, sendMicros / 1000.0, (unsigned)bytes, chunks,
                   (micros() - responseStart) / 1000.0);
   }

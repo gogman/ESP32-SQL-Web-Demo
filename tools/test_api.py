@@ -191,6 +191,51 @@ def main():
     check(status == 200 and len(data.get("rows", [])) == everything - offset and data.get("more") is False,
           "the last page of the whole table (position %d): %d rows in %.0f ms" % (offset, len(data.get("rows", [])), ms))
 
+    # --- Sorted pages --------------------------------------------------------
+    # "sort" names a column by its position in a row and makes the board sort
+    # the whole range by it; "desc=1" turns the order around. Rows with equal
+    # values come in name order, reversed too when descending. Every answer is
+    # compared with the same sort done by SQLite on the PC.
+    print("\nSorted pages")
+    columns = ["year", "state", "name", "total_babies", "primary_sex", "primary_sex_ratio", "per_100k_in_state"]
+    for low, high in (("Bob", "Bobby"), ("S", "T"), ("A", "B")):
+        size = database.execute("Select count(*) from gendered_names where name between ? and ?", (low, high)).fetchone()[0]
+        last = max((size - 1) // 200 * 200, 0)
+        wrong, slowest, requests = [], 0.0, 0
+        for column in range(len(columns)):
+            for descending in (False, True):
+                direction = " desc" if descending else ""
+                sql = RANGE_SQL.replace("order by name, year, state",
+                                        "order by %s%s, name%s, year%s, state%s" % (columns[column], direction, direction, direction, direction))
+                want = [list(row) for row in database.execute(sql, (low, high))]
+                for offset in sorted({0, last}):
+                    params = {"from": low, "to": high, "sort": column, "offset": offset}
+                    if descending:
+                        params["desc"] = 1
+                    status, _, body, ms = request(base, "/api/names?" + urllib.parse.urlencode(params))
+                    data = json.loads(body)
+                    requests += 1
+                    slowest = max(slowest, ms)
+                    if status != 200 or data.get("rows") != want[offset:offset + 200] or data.get("more") != (offset + 200 < size):
+                        wrong.append("%s%s at %d" % (columns[column], direction, offset))
+        check(not wrong, "%s..%s (%d rows): %d sorted pages match, slowest %.0f ms%s"
+              % (low, high, size, requests, slowest, "" if not wrong else "; WRONG: " + ", ".join(wrong)))
+
+    # The whole table, the largest thing there is to sort. The first request
+    # makes the board read all rows; the second only copies a page out.
+    everything_sql = RANGE_SQL.replace("where name between ? and ? ", "").replace("order by name, year, state", "order by total_babies desc, name desc, year desc, state desc")
+    want = [list(row) for row in database.execute(everything_sql)]
+    for offset in (0, len(want) - 100):
+        status, _, body, ms = request(base, "/api/names?" + urllib.parse.urlencode({"prefix": "", "sort": 3, "desc": 1, "offset": offset}))
+        data = json.loads(body)
+        check(status == 200 and data.get("rows") == want[offset:offset + 200] and data.get("more") is (offset + 200 < len(want)),
+              "the whole table by total, largest first, from position %d: %d rows in %.0f ms" % (offset, len(data.get("rows", [])), ms))
+
+    # A sort column that does not exist is refused.
+    for bad in ("7", "-1", "name", ""):
+        status, _, body, _ = request(base, "/api/names?" + urllib.parse.urlencode({"from": "Bob", "to": "Bobby", "sort": bad}))
+        check(status == 400 and "error" in json.loads(body), "sort=%r is answered 400" % bad)
+
     # --- Names starting with -----------------------------------------------
     # The reference here is computed in a different way from the board on
     # purpose. The board turns a prefix into a range of names; the reference
