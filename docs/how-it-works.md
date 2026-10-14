@@ -43,8 +43,7 @@ If the board is ever asked to write data, or is exposed to people who are not tr
 | `web/index.html.gz` | The compressed page, generated before every build; not in version control |
 | `web/bootstrap.min.css` | Bootstrap 5.3.8, the stylesheet the page links to. Not uploaded itself; see `tools/pack_css.py` |
 | `data/` | The filesystem image: `babyname.db` and `bootstrap.min.css.gz` |
-| `db_backup/babyname.original.db` | The original database that `data/babyname.db` is built from |
-| `tools/rebuild_db.py` | Builds `data/babyname.db` from the original |
+| `tools/rebuild_db.py` | Builds `data/babyname.db` from a database in the original layout |
 | `tools/pack_page.py` | Compresses `web/index.html` into `web/index.html.gz`; PlatformIO runs it before every build |
 | `tools/pack_css.py` | Compresses `web/bootstrap.min.css` into `data/bootstrap.min.css.gz` |
 | `tools/test_api.py` | Checks the addresses of a running board against the database file |
@@ -76,9 +75,9 @@ Changing this table moves the partitions. Afterwards both the firmware and the f
 
 `setup()` in `src/main.cpp` brings the board up in this order:
 
-1. **LED and serial port**, so later steps can report progress at 115200 baud.
+1. **LED and serial port.** The serial port is started in the Debug build only, at 115200 baud, so later steps can report progress; the Release build prints nothing of its own (see [Serial output](#serial-output)).
 2. **WiFi.** The board tries the network from `Secrets.h` for up to 20 seconds. If that fails it starts its own access point named `esp32-sqlite`, where the application is reachable at `192.168.4.1`.
-3. **Filesystem.** LittleFS is mounted. It is never formatted by the firmware. If it cannot be mounted, the board says so on the serial port, on the page and in `/api/status`, and carries on without it.
+3. **Filesystem.** LittleFS is mounted. It is never formatted by the firmware. If it cannot be mounted, the board says so on the page and in `/api/status` (and on the serial port in the Debug build), and carries on without it.
 4. **Database.** `babyname.db` is opened read-only. With PSRAM present, SQLite gets a 1024 KiB page cache, which is larger than the whole database. If opening fails, the server still starts and every query answers with the error.
 5. **Name on the network.** The board announces itself as `esp32.local`.
 6. **Web server.** The handlers are registered and the server starts listening on port 80.
@@ -425,9 +424,10 @@ Run these from the project folder.
 |---|---|
 | `pio run -e Release` | Build the firmware |
 | `pio run -e Release -t upload` | Build and upload the firmware |
+| `pio run -e Debug -t upload` | Build and upload the Debug firmware, the only one with serial output; see [Serial output](#serial-output) |
 | `pio run -e Release -t uploadfs` | Build and upload the filesystem image from `data/` |
-| `pio device monitor` | Show the board's serial output |
-| `python tools/rebuild_db.py` | Rebuild `data/babyname.db` from the original |
+| `pio device monitor` | Show the board's serial output (Debug build) |
+| `python tools/rebuild_db.py source.db` | Rebuild `data/babyname.db` from a database in the original layout |
 | `python tools/test_api.py [http://address]` | Check the addresses of a running board |
 | `python tools/test_page.py [http://address]` | Check the page of a running board in a browser |
 | `python tools/run_tests.py [http://address]` | Build, upload, wait for the board, run both tests |
@@ -443,7 +443,7 @@ Both test scripts default to `http://esp32.local`. Passing the board's IP addres
 | `--env Debug` | Build another environment (default `Release`) |
 | `--api-only`, `--page-only` | Run only one of the two tests |
 
-In VS Code the same runs are available as tasks (`.vscode/tasks.json`): Terminal > Run Task... offers "Board tests: upload firmware and run all", "... run all without uploading" and "... upload filesystem and firmware, run all", and "Tasks: Run Test Task" starts the first one. Each asks for the board's address. PlatformIO's own Test button is something else: it runs `pio test`, which builds C++ unit tests from the `test` folder, and this project has none.
+In VS Code the same runs are available as tasks (`.vscode/tasks.json`): Terminal > Run Task... offers "Board tests: upload firmware and run all", "... run all without uploading" and "... upload filesystem and firmware, run all", and "Tasks: Run Test Task" starts the first one. Each asks for the board's address. PlatformIO's own Test button is something else: it runs `pio test`, which builds C++ unit tests, and this project has none.
 
 The same tests also appear in VS Code's Testing panel, through pytest and the Python extension: `tools/board_tests.py` holds three tests, "board is ready" (it answers, has its database, and has no crash dump waiting), "addresses" (runs `tools/test_api.py`) and "page in browser" (runs `tools/test_page.py`). A failing test lists the checks that failed, and its output holds the script's full report. These tests do not build or upload anything; they test the firmware already on the board. `pytest.ini` tells pytest where they are, and `.vscode/settings.json` turns pytest on and selects the project's own Python environment. That environment is set up once:
 
@@ -462,7 +462,7 @@ A full run takes about a minute and a half: 30 to 40 s to build and upload, unde
 
 Both passed in full against the firmware described here.
 
-To replace the data: update the original database, run `tools/rebuild_db.py`, then upload the filesystem.
+To replace the data: run `tools/rebuild_db.py` on a database in the original layout, then upload the filesystem. The original the current data was built from is no longer kept in the project, but it is in the repository's history: `git show c60ca07:db_backup/babyname.original.db > babyname.original.db` takes it out.
 
 ## Version control
 
@@ -474,9 +474,22 @@ Both database files are committed, since the project cannot be built into a work
 
 There are two ways to find out where the firmware crashed. The second one, the saved crash dump, was tried on this board with a test firmware that wrote through a null pointer; the commands and the sample output below come from that test. The first is standard PlatformIO behaviour and was not tried here.
 
+### Serial output
+
+Only the Debug build writes to the serial port. `platformio.ini` passes `-DSERIAL_LOG=1` to it, and `include/Definitions.h` turns that into the macros `LOG_BEGIN`, `LOG_PRINT`, `LOG_PRINTLN` and `LOG_PRINTF`, which every message goes through. In the Release build the macros stand for nothing, so the serial port is not started and the messages are not even part of the firmware, which is about 26 KB smaller for it.
+
+The Debug build prints:
+
+- the startup steps: the WiFi connection or the fallback access point, the filesystem, the free PSRAM and the database cache, the name on the network, and the server starting;
+- a waiting crash dump;
+- one line per `/api/names` and `/api/count` request, saying how long the database work and the sending took, for example `Names 'Bob'..'(prefix)' ... database 12.54 ms, sending 11.11 ms (164 bytes in 1 chunks), whole response 30.4 ms`;
+- the Arduino core's own messages at log level 5 (verbose).
+
+Even the Release build is not completely silent: the ESP32's ROM prints a few lines when the chip starts, and a crash still prints its report (see below). Both come from below the firmware.
+
 ### While watching: the serial monitor
 
-When the firmware crashes it prints the processor state and a backtrace of addresses to the serial port, then restarts. Built and monitored with the Debug environment, the addresses are translated into function names and line numbers:
+When the firmware crashes it prints the processor state, in either build, and a backtrace of addresses to the serial port, then restarts. Built and monitored with the Debug environment, the addresses are translated into function names and line numbers:
 
 ```
 pio run -e Debug -t upload
@@ -491,7 +504,7 @@ The framework also saves the state of every task to the `coredump` partition bef
 
 The board says when a dump is waiting. At startup the firmware checks the partition for a complete dump and reads from it which task crashed and at which address. Three places then show it:
 
-- the serial port, as one line at startup;
+- the serial port, as one line at startup (Debug build only);
 - `/api/status`, as `"crash_dump":true` with `crash_task` and `crash_pc`;
 - the page, as a yellow notice such as "The firmware crashed at some point and saved a crash dump (task loopTask at 0x400d14fb)."
 
@@ -607,7 +620,6 @@ That is a gain of about 2.5% on rows, none on counting, for 122 KB more flash. I
 
 **Housekeeping**
 
-- Query timing is printed to the serial port for every request (`LOG_QUERY_TIMING` is on).
 - Reading a crash dump is a manual procedure. The board reports that a dump is waiting, but the dump can only be read and erased over the serial cable.
 
 ## Suggested improvements
@@ -615,10 +627,9 @@ That is a gain of about 2.5% on rows, none on counting, for 122 KB more flash. I
 In rough order of value.
 
 1. **Give the board a fixed address.** Either fill in `STATIC_IP` and `STATIC_GATEWAY` in `include/Definitions.h` or reserve the address on the router. This avoids the name lookup and the changing address.
-2. **Turn the timing log off** when it is no longer needed, or enable it only in the Debug build.
-3. **Handle a lost WiFi connection at run time**, falling back to the access point after a period without the network.
-4. **Reconsider updates over WiFi.** They were added and removed during development because they need two firmware slots, which leaves about 1.1 MB for the filesystem. They would remove the dependence on the serial upload.
+2. **Handle a lost WiFi connection at run time**, falling back to the access point after a period without the network.
+3. **Reconsider updates over WiFi.** They were added and removed during development because they need two firmware slots, which leaves about 1.1 MB for the filesystem. They would remove the dependence on the serial upload.
 
 Not on this list, because the project is a read-only demonstration: writing to the database from the board, a login, and encryption. See [Purpose](#purpose).
 
-Done since the first version of this document: version control, a content-based cache label for the page, no automatic formatting of the filesystem, an automated browser test, a row total, searching without a reload, column sorting (now of the whole search, on the board), first and last buttons, removal of the file listing, the Bootstrap stylesheet and pagination, the crash-dump notice, the compressed page, a one-command test run, the `-O2` measurement, and the crash-dump procedure.
+Done since the first version of this document: version control, a content-based cache label for the page, no automatic formatting of the filesystem, an automated browser test, a row total, searching without a reload, column sorting (now of the whole search, on the board), first and last buttons, removal of the file listing, the Bootstrap stylesheet and pagination, the crash-dump notice, the compressed page, a one-command test run, serial output in the Debug build only, the `-O2` measurement, and the crash-dump procedure.

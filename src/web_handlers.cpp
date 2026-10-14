@@ -413,7 +413,7 @@ static void handleNamesApi()
   else
     sendJsonError(500, database->lastError());
 
-  if (LOG_QUERY_TIMING)
+  if (SERIAL_LOG)
   {
     /*
      * One line per request on the serial port. pageMicros covers the whole
@@ -421,7 +421,7 @@ static void handleNamesApi()
      * the sending time is subtracted to leave the database's share: running
      * the query and writing the rows as JSON.
      */
-    Serial.printf("Names '%s'..'%s' after '%s' offset %ld sort %d%s %s: database %.2f ms, sending %.2f ms (%u bytes in %u chunks), whole response %.2f ms\n",
+    LOG_PRINTF("Names '%s'..'%s' after '%s' offset %ld sort %d%s %s: database %.2f ms, sending %.2f ms (%u bytes in %u chunks), whole response %.2f ms\n",
                   from.c_str(), server->hasArg("prefix") ? "(prefix)" : to.c_str(), afterName.c_str(),
                   hasOffset ? offset : 0L, hasSort ? sortColumn : -1, descending ? " desc" : "", result ? "ok" : database->lastError(),
                   (pageMicros - sendMicros) / 1000.0, sendMicros / 1000.0, (unsigned)bytes, chunks,
@@ -464,9 +464,9 @@ static void handleCountApi()
   server->sendHeader("Cache-Control", dataCacheControl());
   server->send(200, "application/json", body);
 
-  if (LOG_QUERY_TIMING)
+  if (SERIAL_LOG)
   {
-    Serial.printf("Count '%s'..'%s': %ld rows, whole response %.2f ms\n",
+    LOG_PRINTF("Count '%s'..'%s': %ld rows, whole response %.2f ms\n",
                   from.c_str(), server->hasArg("prefix") ? "(prefix)" : to.c_str(), count,
                   (micros() - countStart) / 1000.0);
   }
@@ -666,7 +666,7 @@ void registerWebHandlers(ChunkServer &webServer, db_mgr &db, int cacheKiB, bool 
       crashAddress = summary.exc_pc;
     }
 
-    Serial.printf("A crash dump is waiting: task '%s' at 0x%08x. See docs/how-it-works.md, \"Reading a crash\"\n",
+    LOG_PRINTF("A crash dump is waiting: task '%s' at 0x%08x. See docs/how-it-works.md, \"Reading a crash\"\n",
                   crashTask, (unsigned)crashAddress);
   }
 

@@ -3,8 +3,8 @@
     //
     // The tests are the Python scripts in tools/, run against the board over
     // the network; see "Building, uploading and testing" in docs/how-it-works.md.
-    // PlatformIO's own "Test" command (pio test) is for C++ unit tests in the
-    // test folder, which this project does not have.
+    // PlatformIO's own "Test" command (pio test) is for C++ unit tests, which
+    // this project does not have.
     //
     // Run them with Terminal > Run Task..., or Ctrl+Shift+P > "Tasks: Run Test
     // Task" for the default one. Each asks for the board's address; a name

@@ -43,7 +43,7 @@ static void applyStaticAddress()
    */
   if (!ip.fromString(STATIC_IP) || !gateway.fromString(STATIC_GATEWAY) || !subnet.fromString(STATIC_SUBNET))
   {
-    Serial.println("Fixed address settings are not valid, using DHCP");
+    LOG_PRINTLN("Fixed address settings are not valid, using DHCP");
     return;
   }
 
@@ -78,10 +78,10 @@ static void startAccessPoint()
   /* Remember when the access point came up; never 0, see accessPointSince. */
   accessPointSince = max(millis(), 1UL);
 
-  Serial.print("WiFi network not reachable. Started access point ");
-  Serial.print(AP_SSID);
-  Serial.print(", IP address: ");
-  Serial.println(WiFi.softAPIP());
+  LOG_PRINT("WiFi network not reachable. Started access point ");
+  LOG_PRINT(AP_SSID);
+  LOG_PRINT(", IP address: ");
+  LOG_PRINTLN(WiFi.softAPIP());
 }
 
 /*
@@ -109,8 +109,8 @@ bool connectWiFi()
   applyStaticAddress();
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-  Serial.print("Connecting to ");
-  Serial.print(WIFI_SSID);
+  LOG_PRINT("Connecting to ");
+  LOG_PRINT(WIFI_SSID);
 
   const unsigned long start = millis();
 
@@ -123,18 +123,18 @@ bool connectWiFi()
     if (millis() - start >= WIFI_CONNECT_TIMEOUT_MS)
     {
       /* End the line of dots, then fall back to the access point. */
-      Serial.println("");
+      LOG_PRINTLN("");
       startAccessPoint();
       return false;
     }
 
     delay(500);
-    Serial.print(".");
+    LOG_PRINT(".");
   }
 
-  Serial.println("");
-  Serial.print("Connected, IP address: ");
-  Serial.println(WiFi.localIP());
+  LOG_PRINTLN("");
+  LOG_PRINT("Connected, IP address: ");
+  LOG_PRINTLN(WiFi.localIP());
   return true;
 }
 
@@ -149,7 +149,7 @@ void announceWebServer()
 {
   if (!MDNS.begin(MDNS_HOSTNAME))
   {
-    Serial.println("MDNS responder could not be started");
+    LOG_PRINTLN("MDNS responder could not be started");
     return;
   }
 
@@ -158,7 +158,7 @@ void announceWebServer()
    * network for web servers will then list the board.
    */
   MDNS.addService("http", "tcp", HTTP_PORT);
-  Serial.println("MDNS responder started");
+  LOG_PRINTLN("MDNS responder started");
 }
 
 /*
@@ -184,7 +184,7 @@ void handleNetwork()
        * Restarting is the simplest reliable way back: setup() runs again
        * and connectWiFi() makes a fresh attempt.
        */
-      Serial.println("Restarting to try the WiFi network again");
+      LOG_PRINTLN("Restarting to try the WiFi network again");
       ESP.restart();
     }
 

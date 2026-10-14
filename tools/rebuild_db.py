@@ -1,9 +1,13 @@
 """Builds data/babyname.db, the database the firmware reads, from the original data.
 
 Usage (from the project folder):
-    python tools/rebuild_db.py [source.db] [target.db]
+    python tools/rebuild_db.py source.db [target.db]
 
-The defaults are db_backup/babyname.original.db and data/babyname.db.
+source.db is a database with the table gendered_names in its original layout. The
+target defaults to data/babyname.db. The original the current data was built from
+is no longer kept in the project; it is in the repository's history and can be
+taken out with:
+    git show c60ca07:db_backup/babyname.original.db > babyname.original.db
 
 The target holds the same rows as the source table gendered_names, laid out for the
 ESP32: the table is stored in (name, year, state) order so a range of names is one
@@ -54,9 +58,11 @@ CREATE TABLE gendered_names (
 
 def main():
     # The project folder is the parent of the folder this script is in, so the
-    # default paths work no matter which folder the script is started from.
+    # default target works no matter which folder the script is started from.
     project = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    source = sys.argv[1] if len(sys.argv) > 1 else os.path.join(project, "db_backup", "babyname.original.db")
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    source = sys.argv[1]
     target = sys.argv[2] if len(sys.argv) > 2 else os.path.join(project, "data", "babyname.db")
 
     # The new database is built under a temporary name next to the target. The

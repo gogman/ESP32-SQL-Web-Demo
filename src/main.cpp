@@ -55,11 +55,13 @@ void setup(void)
   digitalWrite(LED_PIN, 0);
 
   /*
-   * 115200 baud matches monitor_speed in platformio.ini. The empty line
-   * separates our output from the boot messages the ESP32 ROM prints first.
+   * The serial port, in the Debug build only (see SERIAL_LOG in
+   * Definitions.h). 115200 baud matches monitor_speed in platformio.ini. The
+   * empty line separates our output from the boot messages the ESP32 ROM
+   * prints first.
    */
-  Serial.begin(115200);
-  Serial.println("");
+  LOG_BEGIN(115200);
+  LOG_PRINTLN("");
 
   /*
    * Join the WiFi network, or start the fallback access point. The return
@@ -82,13 +84,13 @@ void setup(void)
    * A failure is not fatal. The web server still starts, so the problem is
    * reported on the page and by /api/status as well as here.
    */
-  Serial.println("Mounting LittleFS");
+  LOG_PRINTLN("Mounting LittleFS");
   const bool fsMounted = LittleFS.begin(false);
 
   if (fsMounted)
-    Serial.println("LittleFS mounted");
+    LOG_PRINTLN("LittleFS mounted");
   else
-    Serial.println("LittleFS could not be mounted. Upload the filesystem image: pio run -e Release -t uploadfs");
+    LOG_PRINTLN("LittleFS could not be mounted. Upload the filesystem image: pio run -e Release -t uploadfs");
 
   /*
    * Decide how much memory SQLite may use to cache database pages.
@@ -99,7 +101,7 @@ void setup(void)
    * for that, so 0 is passed and SQLite keeps its tiny built-in default.
    */
   const int cacheKiB = psramFound() ? DB_CACHE_KIB : 0;
-  Serial.printf("PSRAM: %u bytes free, database cache: %d KiB\n", (unsigned)ESP.getFreePsram(), cacheKiB);
+  LOG_PRINTF("PSRAM: %u bytes free, database cache: %d KiB\n", (unsigned)ESP.getFreePsram(), cacheKiB);
 
   /*
    * Open the database. A failure here is reported but is not fatal: the web
@@ -110,8 +112,8 @@ void setup(void)
    */
   if (!dbMgr.open(DB_PATH, cacheKiB))
   {
-    Serial.print("Failed to open database: ");
-    Serial.println(dbMgr.lastError());
+    LOG_PRINT("Failed to open database: ");
+    LOG_PRINTLN(dbMgr.lastError());
   }
 
   /* Make the board reachable as "<MDNS_HOSTNAME>.local" instead of only by IP address. */
@@ -125,7 +127,7 @@ void setup(void)
   registerWebHandlers(server, dbMgr, cacheKiB, fsMounted);
   server.begin();
 
-  Serial.println("HTTP server started");
+  LOG_PRINTLN("HTTP server started");
 }
 
 /*

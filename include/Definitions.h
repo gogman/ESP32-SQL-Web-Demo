@@ -128,10 +128,38 @@ static const int DB_PAGE_ROWS = 200;
 /* ------------------------------------------------------------------ */
 
 /*
- * When true, every /api/names request prints one line to the serial port
- * showing how long the database work and the sending took. Set it to false
- * to keep the serial output quiet.
+ * Output on the serial port, in the Debug build only.
+ *
+ * platformio.ini passes -DSERIAL_LOG=1 to the Debug build. The Release build
+ * leaves it undefined, and this makes it 0: the serial port is then not even
+ * started, and the firmware prints nothing of its own. (The ESP32's ROM
+ * still prints a few boot lines, and a crash still prints its report; both
+ * come from below the firmware.)
+ *
+ * All output goes through the LOG_ macros below, which mirror Serial.begin(),
+ * print(), println() and printf(). In Release they are replaced by nothing,
+ * so the text, and the work of formatting it, is left out of the firmware.
+ * Their arguments are then not evaluated either, so they must not have side
+ * effects the program relies on.
+ *
+ * In the Debug build this covers the startup messages, the network messages,
+ * and one line per data request (/api/names, /api/count) saying how long the
+ * database work and the sending took.
  */
-static const bool LOG_QUERY_TIMING = true;
+#ifndef SERIAL_LOG
+#define SERIAL_LOG 0
+#endif
+
+#if SERIAL_LOG
+#define LOG_BEGIN(baud) Serial.begin(baud)
+#define LOG_PRINT(...) Serial.print(__VA_ARGS__)
+#define LOG_PRINTLN(...) Serial.println(__VA_ARGS__)
+#define LOG_PRINTF(...) Serial.printf(__VA_ARGS__)
+#else
+#define LOG_BEGIN(baud) ((void)0)
+#define LOG_PRINT(...) ((void)0)
+#define LOG_PRINTLN(...) ((void)0)
+#define LOG_PRINTF(...) ((void)0)
+#endif
 
 #endif
