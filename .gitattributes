@@ -1,11 +1,3 @@
-# Line endings: every text file is stored and checked out with LF, on every
-# system. Without this, editors and Git's Windows defaults turned files to
-# CRLF and back, and each flip showed up as a change to every line.
-#
-# The web page is built into the firmware byte for byte, so its line endings
-# must not depend on who checked it out; LF everywhere guarantees that.
-* text=auto eol=lf
-
-# Never to be converted or compared as text.
-*.db binary
-*.gz binary
+# Store every file exactly as it is on disk: no line-ending conversion.
+# The web page is built into the firmware byte for byte, and the databases are binary.
+* -text
