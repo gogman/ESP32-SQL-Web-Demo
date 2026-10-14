@@ -333,6 +333,12 @@ def wait_table(browser, rows):
     return browser.wait_for("JSON.stringify(%s) == %s" % (TABLE, json.dumps(expected)))
 
 
+def status_text(start, count, of, size):
+    """The status line for a page of rows: count rows from position start, of
+    a total of rows, at size rows per page, e.g. "Page 2 of 13 (26 to 50 of 323 records)"."""
+    return "Page %d of %d (%d to %d of %d records)" % (start // size + 1, max(-(-of // size), 1), start + 1, start + count, of)
+
+
 def wait_status(browser, text):
     """Waits for the status line to read exactly the given text and reports whether it did."""
     return browser.wait_for("%s == %s" % (STATUS, json.dumps(text)))
@@ -430,7 +436,7 @@ def main():
         shown = browser.run("document.getElementById('prefix').value = 'Mar'; document.getElementById('prefixForm').requestSubmit(); "
                             "%s.classList.contains('show')" % LOADING)
         check(shown, "a search shows it at once")
-        check(browser.wait_for("!%s.classList.contains('show')" % LOADING) and wait_status(browser, "Rows 1 to 25 of %d" % len(mar)),
+        check(browser.wait_for("!%s.classList.contains('show')" % LOADING) and wait_status(browser, status_text(0, 25, len(mar), 25)),
               "and it goes away when the rows are there")
 
         browser.run("showLoading(true)")
@@ -463,7 +469,7 @@ def main():
         mar_m = [row for row in mar if row[4] == "M"]
 
         def rows_of(start, count, of):
-            return "Rows %d to %d of %d" % (start + 1, start + count, of)
+            return status_text(start, count, of, count)
 
         browser.open(base + "/?prefix=Mar")
         check(wait_status(browser, rows_of(0, 25, len(mar))) and wait_table(browser, mar[:25]), "25 rows per page at first: " + rows_of(0, 25, len(mar)))
@@ -509,7 +515,7 @@ def main():
         # --- A search given in the address --------------------------------------
         print("\nA range in the address")
         open_at(browser, base + "/?from=Bob&to=Bobby", page_size)
-        check(wait_status(browser, "Rows 1 to %d of %d" % (len(bob), len(bob))), "the status shows the rows and the total")
+        check(wait_status(browser, status_text(0, len(bob), len(bob), page_size)), "the status shows the rows and the total")
         check(browser.run(TABLE) == as_shown(bob), "the table shows the %d rows of the database" % len(bob))
         check(browser.run("[document.getElementById('from').value, document.getElementById('to').value]") == ["Bob", "Bobby"],
               "the search is shown in the form fields")
@@ -520,14 +526,14 @@ def main():
 
         print("\nThe address of the former results page")
         open_at(browser, base + "/query_db?from=Bob&to=Bobby", page_size)
-        check(wait_status(browser, "Rows 1 to %d of %d" % (len(bob), len(bob))) and browser.run(TABLE) == as_shown(bob),
+        check(wait_status(browser, status_text(0, len(bob), len(bob), page_size)) and browser.run(TABLE) == as_shown(bob),
               "it shows the same results")
 
         # --- Paging --------------------------------------------------------------
         print("\nPaging through names starting with 'Mar'")
         open_at(browser, base + "/?prefix=Mar", page_size)
-        first_status = "Rows 1 to %d of %d" % (page_size, len(mar))
-        second_status = "Rows %d to %d of %d" % (page_size + 1, len(mar), len(mar))
+        first_status = status_text(0, page_size, len(mar), page_size)
+        second_status = status_text(page_size, len(mar) - page_size, len(mar), page_size)
         check(wait_status(browser, first_status), "first page: " + first_status)
         check(browser.run(TABLE) == as_shown(mar[:page_size]), "first page shows the first %d rows" % page_size)
         check(disabled(browser, "previous") and not disabled(browser, "next"), "only 'next' is available")
@@ -556,14 +562,14 @@ def main():
         last_start = (pages - 1) * page_size
 
         def rows_status(start, count):
-            return "Rows %d to %d of %d" % (start + 1, start + count, len(s_to_t))
+            return status_text(start, count, len(s_to_t), page_size)
 
         open_at(browser, base + "/?from=S&to=T", page_size)
         check(wait_status(browser, rows_status(0, page_size)), "first page: " + rows_status(0, page_size))
         check(disabled(browser, "first") and disabled(browser, "previous") and not disabled(browser, "next") and not disabled(browser, "last"),
               "on the first page only 'next' and 'last' are available")
-        check(pager_labels(browser) == ["First", "Previous", "[1]", "2", "3", "Next", "Last"],
-              "the pager above the table shows: First Previous [1] 2 3 Next Last")
+        check(pager_labels(browser) == ["First", "Previous", "[1]", "2", "3", "4", "5", "Next", "Last"],
+              "the pager above the table shows: First Previous [1] 2 3 4 5 Next Last")
         check(pager_labels(browser, "pagerBottom") == pager_labels(browser), "the pager below the table shows the same")
 
         # A page number, from the pager below the table. Page 3 has not been
@@ -571,14 +577,16 @@ def main():
         click(browser, 3, "pagerBottom")
         check(wait_status(browser, rows_status(2 * page_size, page_size)) and browser.run(TABLE) == as_shown(s_to_t[2 * page_size:3 * page_size]),
               "a click on page 3 below the table shows: " + rows_status(2 * page_size, page_size))
-        check(pager_labels(browser) == ["First", "Previous", "1", "2", "[3]", "4", "5", "Next", "Last"],
-              "the pager shows: First Previous 1 2 [3] 4 5 Next Last")
+        check(pager_labels(browser) == ["First", "Previous", "1", "2", "[3]", "4", "5", "6", "7", "Next", "Last"],
+              "the pager shows: First Previous 1 2 [3] 4 5 6 7 Next Last")
 
         click(browser, "last")
         check(wait_status(browser, rows_status(last_start, len(s_to_t) - last_start)), "'last' shows: " + rows_status(last_start, len(s_to_t) - last_start))
         check(browser.run(TABLE) == as_shown(s_to_t[last_start:]), "with the last %d rows of the database" % (len(s_to_t) - last_start))
         check(not disabled(browser, "first") and not disabled(browser, "previous") and disabled(browser, "next") and disabled(browser, "last"),
               "on the last page only 'first' and 'previous' are available")
+        check(pager_labels(browser) == ["First", "Previous"] + [str(n) for n in range(pages - 4, pages)] + ["[%d]" % pages, "Next", "Last"],
+              "the pager shows the last 5 page numbers")
 
         click(browser, "previous")
         before_last = last_start - page_size
@@ -594,6 +602,24 @@ def main():
         click(browser, "first")
         check(wait_status(browser, rows_status(0, page_size)) and browser.run(TABLE) == as_shown(s_to_t[:page_size]),
               "'first' returns to the first page")
+
+        # --- Nine page numbers ---------------------------------------------------
+        # At 25 rows per page S..T has enough pages for the full window: four
+        # numbers either side of the current page, nine in all.
+        print("\nPage numbers around the current page")
+        browser.open(base + "/?from=S&to=T")
+        many = -(-len(s_to_t) // 25)
+        check(wait_status(browser, status_text(0, 25, len(s_to_t), 25)) and pager_labels(browser)[2:-2] == ["[1]", "2", "3", "4", "5"],
+              "%d pages; on page 1 the pager shows [1] to 5" % many)
+        click(browser, 5)
+        check(wait_status(browser, status_text(100, 25, len(s_to_t), 25)) and pager_labels(browser)[2:-2] == ["1", "2", "3", "4", "[5]", "6", "7", "8", "9"],
+              "on page 5 it shows 1 to 9")
+        click(browser, 9)
+        check(wait_status(browser, status_text(200, 25, len(s_to_t), 25)) and pager_labels(browser)[2:-2] == ["5", "6", "7", "8", "[9]", "10", "11", "12", "13"],
+              "on page 9 it shows 5 to 13, four either side")
+        click(browser, "last")
+        check(wait_status(browser, status_text((many - 1) * 25, len(s_to_t) - (many - 1) * 25, len(s_to_t), 25)) and pager_labels(browser)[2:-2] == [str(n) for n in range(many - 4, many)] + ["[%d]" % many],
+              "on the last page it shows the last 5")
 
         # --- Sorting -------------------------------------------------------------
         # Sorting is done by the board and covers the whole search, not just the
@@ -646,13 +672,13 @@ def main():
         browser.run("window.testMarker = 'still here'")
 
         browser.run("document.getElementById('prefix').value = 'bob'; document.getElementById('prefixForm').requestSubmit()")
-        check(wait_status(browser, "Rows 1 to %d of %d" % (len(bob), len(bob))) and browser.run(TABLE) == as_shown(bob),
+        check(wait_status(browser, status_text(0, len(bob), len(bob), page_size)) and browser.run(TABLE) == as_shown(bob),
               "'starts with' in lower case finds the names")
         check(browser.run("location.search") == "?prefix=bob", "the address shows the search")
         check(browser.run("window.testMarker") == "still here", "the page was not reloaded")
 
         browser.run("document.getElementById('from').value = 'Bob'; document.getElementById('to').value = 'Bobby'; document.getElementById('rangeForm').requestSubmit()")
-        check(browser.wait_for("location.search == '?from=Bob&to=Bobby'") and wait_status(browser, "Rows 1 to %d of %d" % (len(bob), len(bob))),
+        check(browser.wait_for("location.search == '?from=Bob&to=Bobby'") and wait_status(browser, status_text(0, len(bob), len(bob), page_size)),
               "the range form searches as well")
 
         browser.run("document.getElementById('prefix').value = 'zz'; document.getElementById('prefixForm').requestSubmit()")
@@ -661,7 +687,7 @@ def main():
 
         # The browser's back button, stepping back through the three searches.
         browser.run("history.back()")
-        check(browser.wait_for("location.search == '?from=Bob&to=Bobby'") and wait_status(browser, "Rows 1 to %d of %d" % (len(bob), len(bob))),
+        check(browser.wait_for("location.search == '?from=Bob&to=Bobby'") and wait_status(browser, status_text(0, len(bob), len(bob), page_size)),
               "'back' returns to the previous search")
         browser.run("history.back()")
         browser.wait_for("location.search == '?prefix=bob'")

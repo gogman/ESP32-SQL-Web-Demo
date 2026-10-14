@@ -99,7 +99,7 @@ applyTheme(storedTheme());
 var COLUMNS = ['Year', 'State', 'Name', 'Total babies', 'Primary Sex', 'Ratio', 'Per 100k'];
 var PAGERS = ['pagerTop', 'pagerBottom'];
 var PER_PAGE = ['perPageTop', 'perPageBottom'];
-var PAGES_AROUND = 2;
+var PAGES_AROUND = 4;
 
 var query = null;
 var searchId = 0;
@@ -301,8 +301,12 @@ function pagerClick(event) {
 function showStatus() {
   if (pageError) setStatus('Failed to fetch data: ' + pageError);
   else if (pageRows.length == 0) setStatus('No records found');
-  else setStatus('Rows ' + (starts[page] + 1) + ' to ' + (starts[page] + pageRows.length) +
-                 (total != null ? ' of ' + total : (pageMore ? '' : ' (end)')));
+  else {
+    var last = starts[page] + pageRows.length;
+    var count = total != null ? total : (pageMore ? null : last);
+    setStatus('Page ' + (page + 1) + (count != null ? ' of ' + Math.max(Math.ceil(count / perPage), 1) : '') +
+              ' (' + (starts[page] + 1) + ' to ' + last + (count != null ? ' of ' + count : '') + ' records)');
+  }
 }
 
 function showSortArrow() {
