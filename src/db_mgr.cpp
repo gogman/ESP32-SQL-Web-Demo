@@ -32,6 +32,9 @@
  *               the cursor, which is how a page continues where the last
  *               one stopped.
  *   ?6          The largest number of rows to return.
+ *   ?7          The primary sex to keep, "M" or "F", or "" to keep both.
+ *               "?7 = '' or ..." makes the filter switch itself off when
+ *               it is empty, so one query serves both cases.
  *
  * "order by name, year, state" matches the storage order, so SQLite does
  * not sort anything; it simply reads the rows as they lie.
@@ -39,7 +42,7 @@
 static const char PAGE_SQL[] =
     "Select year, state, name, total_babies, primary_sex, primary_sex_ratio, per_100k_in_state "
     "from gendered_names "
-    "where name between ?1 and ?2 and (name, year, state) > (?3, ?4, ?5) "
+    "where name between ?1 and ?2 and (name, year, state) > (?3, ?4, ?5) and (?7 = '' or primary_sex = ?7) "
     "order by name, year, state limit ?6";
 
 /*
@@ -47,20 +50,21 @@ static const char PAGE_SQL[] =
  * instead of by a cursor. "limit ?3 offset ?4" makes SQLite read and discard
  * the first ?4 rows of the range and then return up to ?3. Discarding is
  * cheap per row but not free, so the further into the range the page lies,
- * the longer this takes; PAGE_SQL does not have that cost.
+ * the longer this takes; PAGE_SQL does not have that cost. ?5 is the
+ * primary sex filter, as ?7 in PAGE_SQL.
  */
 static const char OFFSET_SQL[] =
     "Select year, state, name, total_babies, primary_sex, primary_sex_ratio, per_100k_in_state "
     "from gendered_names "
-    "where name between ?1 and ?2 "
+    "where name between ?1 and ?2 and (?5 = '' or primary_sex = ?5) "
     "order by name, year, state limit ?3 offset ?4";
 
 /*
  * The query behind getCount(): how many rows a range of names holds. It uses
  * the same "between" as PAGE_SQL, so it counts exactly the rows that paging
- * through the range would return.
+ * through the range would return, and the same primary sex filter (?3).
  */
-static const char COUNT_SQL[] = "Select count(*) from gendered_names where name between ?1 and ?2";
+static const char COUNT_SQL[] = "Select count(*) from gendered_names where name between ?1 and ?2 and (?3 = '' or primary_sex = ?3)";
 
 /*
  * The cursor used for the first page, when there is no previous row.
@@ -492,7 +496,7 @@ void db_mgr::setErrorFromDb()
     setError(sqlite3_errmsg(db));
 }
 
-bool db_mgr::bindPage(const char *from, const char *to, const Cursor *after, int limit)
+bool db_mgr::bindPage(const char *from, const char *to, const char *sex, const Cursor *after, int limit)
 {
     /* Without a connection there is no statement to bind to. */
     if (!db)
@@ -522,7 +526,7 @@ bool db_mgr::bindPage(const char *from, const char *to, const Cursor *after, int
     const char *first = strcasecmp(after->name, from) > 0 ? after->name : from;
 
     /*
-     * Fill in the six placeholders of PAGE_SQL.
+     * Fill in the seven placeholders of PAGE_SQL.
      *
      * For the text values, -1 means "the string is null-terminated, measure
      * it", and SQLITE_STATIC promises that the string stays valid until the
@@ -538,7 +542,8 @@ bool db_mgr::bindPage(const char *from, const char *to, const Cursor *after, int
         sqlite3_bind_text(pageStmt, 3, after->name, -1, SQLITE_STATIC) != SQLITE_OK ||
         sqlite3_bind_double(pageStmt, 4, after->year) != SQLITE_OK ||
         sqlite3_bind_text(pageStmt, 5, after->state, -1, SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_int(pageStmt, 6, limit + 1) != SQLITE_OK)
+        sqlite3_bind_int(pageStmt, 6, limit + 1) != SQLITE_OK ||
+        sqlite3_bind_text(pageStmt, 7, sex, -1, SQLITE_STATIC) != SQLITE_OK)
     {
         setErrorFromDb();
         return false;
@@ -548,11 +553,11 @@ bool db_mgr::bindPage(const char *from, const char *to, const Cursor *after, int
 }
 
 /*
- * Fills in the four placeholders of OFFSET_SQL: the two bounds of the range,
- * the row limit (again one more than will be shown, see bindPage()), and the
- * number of rows to skip.
+ * Fills in the five placeholders of OFFSET_SQL: the two bounds of the range,
+ * the row limit (again one more than will be shown, see bindPage()), the
+ * number of rows to skip, and the primary sex filter.
  */
-bool db_mgr::bindOffsetPage(const char *from, const char *to, long offset, int limit)
+bool db_mgr::bindOffsetPage(const char *from, const char *to, const char *sex, long offset, int limit)
 {
     if (!db)
     {
@@ -563,7 +568,8 @@ bool db_mgr::bindOffsetPage(const char *from, const char *to, long offset, int l
     if (sqlite3_bind_text(offsetStmt, 1, from, -1, SQLITE_STATIC) != SQLITE_OK ||
         sqlite3_bind_text(offsetStmt, 2, to, -1, SQLITE_STATIC) != SQLITE_OK ||
         sqlite3_bind_int(offsetStmt, 3, limit + 1) != SQLITE_OK ||
-        sqlite3_bind_int64(offsetStmt, 4, offset) != SQLITE_OK)
+        sqlite3_bind_int64(offsetStmt, 4, offset) != SQLITE_OK ||
+        sqlite3_bind_text(offsetStmt, 5, sex, -1, SQLITE_STATIC) != SQLITE_OK)
     {
         setErrorFromDb();
         return false;
@@ -616,7 +622,7 @@ bool db_mgr::writeRows(ChunkWriter &out, sqlite3_stmt *stmt, int limit, bool &mo
     return true;
 }
 
-long db_mgr::getCount(const char *from, const char *to)
+long db_mgr::getCount(const char *from, const char *to, const char *sex)
 {
     /* However this function is left, the statement is made reusable again (see StmtReset). */
     StmtReset reset{countStmt};
@@ -627,9 +633,10 @@ long db_mgr::getCount(const char *from, const char *to)
         return -1;
     }
 
-    /* The two bounds, used in place and not copied, exactly as in bindPage(). */
+    /* The two bounds and the filter, used in place and not copied, exactly as in bindPage(). */
     if (sqlite3_bind_text(countStmt, 1, from, -1, SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_text(countStmt, 2, to, -1, SQLITE_STATIC) != SQLITE_OK)
+        sqlite3_bind_text(countStmt, 2, to, -1, SQLITE_STATIC) != SQLITE_OK ||
+        sqlite3_bind_text(countStmt, 3, sex, -1, SQLITE_STATIC) != SQLITE_OK)
     {
         setErrorFromDb();
         return -1;
@@ -696,7 +703,7 @@ bool db_mgr::writePage(sqlite3_stmt *stmt, bool bound, int limit, const ChunkSin
     return ok;
 }
 
-bool db_mgr::getPage(const char *from, const char *to, const Cursor *after, int limit, const ChunkSink &emit)
+bool db_mgr::getPage(const char *from, const char *to, const char *sex, const Cursor *after, int limit, const ChunkSink &emit)
 {
     /* A limit below 1 would return nothing and could never make progress, so 1 is the minimum. */
     limit = max(limit, 1);
@@ -707,17 +714,17 @@ bool db_mgr::getPage(const char *from, const char *to, const Cursor *after, int 
      */
     StmtReset reset{pageStmt};
 
-    return writePage(pageStmt, bindPage(from, to, after, limit), limit, emit);
+    return writePage(pageStmt, bindPage(from, to, sex, after, limit), limit, emit);
 }
 
-bool db_mgr::getPageAt(const char *from, const char *to, long offset, int limit, const ChunkSink &emit)
+bool db_mgr::getPageAt(const char *from, const char *to, const char *sex, long offset, int limit, const ChunkSink &emit)
 {
     limit = max(limit, 1);
 
     StmtReset reset{offsetStmt};
 
     /* A negative position makes no sense; treat it as the start of the range. */
-    return writePage(offsetStmt, bindOffsetPage(from, to, max(offset, 0L), limit), limit, emit);
+    return writePage(offsetStmt, bindOffsetPage(from, to, sex, max(offset, 0L), limit), limit, emit);
 }
 
 /* ------------------------------------------------------------------ */
@@ -801,9 +808,9 @@ void db_mgr::dropSortedRange()
  * sortedRows instead of sending anything; flushing after every row tells
  * where one row ends and the next begins.
  */
-bool db_mgr::loadSortedRange(const char *from, const char *to)
+bool db_mgr::loadSortedRange(const char *from, const char *to, const char *sex)
 {
-    if (sortedValid && sortedFrom == from && sortedTo == to)
+    if (sortedValid && sortedFrom == from && sortedTo == to && sortedSex == sex)
         return true;
 
     dropSortedRange();
@@ -814,7 +821,7 @@ bool db_mgr::loadSortedRange(const char *from, const char *to)
      * The position query, from the start of the range and without a limit:
      * bindOffsetPage() asks for limit + 1 rows, and -1 means "all" to SQLite.
      */
-    if (!bindOffsetPage(from, to, 0, -2))
+    if (!bindOffsetPage(from, to, sex, 0, -2))
         return false;
 
     size_t rowCapacity = 0;
@@ -891,6 +898,7 @@ bool db_mgr::loadSortedRange(const char *from, const char *to)
 
     sortedFrom = from;
     sortedTo = to;
+    sortedSex = sex;
     sortedValid = true;
     return true;
 }
@@ -967,7 +975,7 @@ void db_mgr::sortKeptRange(int column)
     sortedColumn = column;
 }
 
-bool db_mgr::getSortedPage(const char *from, const char *to, int column, bool descending, long offset, int limit, const ChunkSink &emit)
+bool db_mgr::getSortedPage(const char *from, const char *to, const char *sex, int column, bool descending, long offset, int limit, const ChunkSink &emit)
 {
     if (!db)
     {
@@ -982,7 +990,7 @@ bool db_mgr::getSortedPage(const char *from, const char *to, int column, bool de
     }
 
     /* Nothing has been emitted yet, so on failure the caller can still answer in its own way. */
-    if (!loadSortedRange(from, to))
+    if (!loadSortedRange(from, to, sex))
         return false;
 
     sortKeptRange(column);

@@ -39,6 +39,10 @@ static_assert(db_mgr::CHUNK_SIZE <= ChunkServer::MAX_CHUNK_SIZE, "a database chu
 extern const char INDEX_HTML_START[] asm("_binary_web_index_html_gz_start");
 extern const char INDEX_HTML_END[] asm("_binary_web_index_html_gz_end");
 
+/* The page's icon, web/favicon.ico, built into the firmware the same way. */
+extern const char FAVICON_START[] asm("_binary_web_favicon_ico_start");
+extern const char FAVICON_END[] asm("_binary_web_favicon_ico_end");
+
 /*
  * When this file was compiled: the date and time the compiler ran. It is
  * reported by /api/status as "build", to tell which firmware is on the board.
@@ -194,15 +198,27 @@ static void handleIndex()
 }
 
 /*
- * Reads the range of names a request asks for into from and to.
+ * Reads the rows a request asks for: the range of names into from and to,
+ * and the primary sex filter into sex.
  *
  * The range is given either as "prefix" (names starting with that text) or
- * as "from" and "to" together. Returns true when one of the two forms was
- * present. Otherwise the request is answered with a 400 error here, false
- * is returned, and the caller has nothing left to do.
+ * as "from" and "to" together. The filter is the optional parameter "sex":
+ * "M" or "F" (either case), or left out or empty for all rows.
+ *
+ * Returns true when the request is valid. Otherwise it is answered with a
+ * 400 error here, false is returned, and the caller has nothing left to do.
  */
-static bool readRange(String &from, String &to)
+static bool readRange(String &from, String &to, String &sex)
 {
+  sex = server->arg("sex");
+  sex.toUpperCase();
+
+  if (sex != "" && sex != "M" && sex != "F")
+  {
+    sendJsonError(400, "sex must be M, F or empty");
+    return false;
+  }
+
   if (server->hasArg("prefix"))
   {
     /* "Starts with" becomes a range; see HIGHEST_CHARACTER. */
@@ -256,13 +272,17 @@ static const char *dataCacheControl()
  *                        its position in a row, 0 to 6. Pages of a sorted
  *                        range are found by offset only; a cursor is ignored.
  *   desc                 Optional, with sort. "1" sorts largest first.
+ *   sex                  Optional. "M" or "F" keeps only rows with that
+ *                        primary sex; left out or empty, all rows.
+ *   limit                Optional. Rows per page, 1 to DB_PAGE_ROWS; that
+ *                        maximum is also the default.
  *   v                    Optional. The database version from /api/status.
  *                        Its value is not examined; its presence marks the
  *                        response as safe to cache.
  *
  * The answer is the document described at db_mgr::getPage(), with status
- * 200. A request without a range, or with a sort column that does not
- * exist, gets 400, a database failure 500, both with a {"error": ...}
+ * 200. A request without a range, or with a sort column, filter or limit
+ * that does not exist, gets 400, a database failure 500, both with a {"error": ...}
  * document.
  */
 static void handleNamesApi()
@@ -279,9 +299,24 @@ static void handleNamesApi()
    */
   String from;
   String to;
+  String sex;
 
-  if (!readRange(from, to))
+  if (!readRange(from, to, sex))
     return;
+
+  /*
+   * Rows per page. toInt() gives 0 for anything that is not a number,
+   * which the range check then refuses.
+   */
+  const int limit = server->hasArg("limit") ? server->arg("limit").toInt() : DB_PAGE_ROWS;
+
+  if (limit < 1 || limit > DB_PAGE_ROWS)
+  {
+    char message[48];
+    snprintf(message, sizeof(message), "limit must be from 1 to %d", DB_PAGE_ROWS);
+    sendJsonError(400, message);
+    return;
+  }
 
   /*
    * The cursor. The strings are again held in named objects so they outlive
@@ -361,10 +396,10 @@ static void handleNamesApi()
 
   /* Sorted if asked for; else by position if one was given; otherwise by cursor (or the first page). */
   const bool result = hasSort
-                          ? database->getSortedPage(from.c_str(), to.c_str(), sortColumn, descending, offset, DB_PAGE_ROWS, sendPiece)
+                          ? database->getSortedPage(from.c_str(), to.c_str(), sex.c_str(), sortColumn, descending, offset, limit, sendPiece)
                       : hasOffset
-                          ? database->getPageAt(from.c_str(), to.c_str(), offset, DB_PAGE_ROWS, sendPiece)
-                          : database->getPage(from.c_str(), to.c_str(), hasCursor ? &after : nullptr, DB_PAGE_ROWS, sendPiece);
+                          ? database->getPageAt(from.c_str(), to.c_str(), sex.c_str(), offset, limit, sendPiece)
+                          : database->getPage(from.c_str(), to.c_str(), sex.c_str(), hasCursor ? &after : nullptr, limit, sendPiece);
 
   const unsigned long pageMicros = micros() - pageStart;
 
@@ -409,12 +444,13 @@ static void handleCountApi()
 
   String from;
   String to;
+  String sex;
 
-  if (!readRange(from, to))
+  if (!readRange(from, to, sex))
     return;
 
   const unsigned long countStart = micros();
-  const long count = database->getCount(from.c_str(), to.c_str());
+  const long count = database->getCount(from.c_str(), to.c_str(), sex.c_str());
 
   if (count < 0)
   {
@@ -516,6 +552,22 @@ static void handleCss()
    */
   server->sendHeader("Cache-Control", "public, max-age=31536000, immutable");
   server->streamFile(file, "text/css");
+}
+
+/*
+ * GET /favicon.ico - the icon the browser shows for the page, in its tab
+ * and its bookmarks: the Espressif logo, at 16, 32 and 48 pixels.
+ *
+ * Browsers ask for it by themselves, on the first visit and again from
+ * time to time. It never changes between firmware versions in practice,
+ * so the browser may keep it for a week without asking.
+ */
+static void handleFavicon()
+{
+  ActivityLed led;
+
+  server->sendHeader("Cache-Control", "public, max-age=604800");
+  server->send_P(200, "image/x-icon", FAVICON_START, FAVICON_END - FAVICON_START);
 }
 
 /*
@@ -640,8 +692,9 @@ void registerWebHandlers(ChunkServer &webServer, db_mgr &db, int cacheKiB, bool 
   webServer.on(COUNT_API_URL, HTTP_GET, handleCountApi);
   webServer.on(STATUS_API_URL, HTTP_GET, handleStatusApi);
 
-  /* The stylesheet the page links to. */
+  /* The stylesheet the page links to, and the page's icon. */
   webServer.on(CSS_URL, HTTP_GET, handleCss);
+  webServer.on("/favicon.ico", HTTP_GET, handleFavicon);
 
   /* All errors. */
   webServer.onNotFound(handleOther);

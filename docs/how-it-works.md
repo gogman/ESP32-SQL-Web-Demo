@@ -1,6 +1,6 @@
 # SQLite_Web: how it works
 
-SQLite_Web is firmware for an ESP32 board that serves a small web application. The application searches a SQLite database of baby names stored on the board's own flash memory and shows the results in a browser, 200 rows at a time.
+SQLite_Web is firmware for an ESP32 board that serves a small web application. The application searches a SQLite database of baby names stored on the board's own flash memory and shows the results in a browser, 50 rows at a time by default.
 
 This document describes how the program is put together, how the web page works, how to build, test and diagnose it, what is known to be wrong or fragile, and what could be improved next. It reflects the state of the project on 13 October 2026.
 
@@ -39,6 +39,7 @@ If the board is ever asked to write data, or is exposed to people who are not tr
 | `include/Definitions.h` | All settings |
 | `include/Secrets.h` | WiFi name and passwords; not kept in version control. `Secrets.example.h` is the template |
 | `web/index.html` | The application page, built into the firmware compressed |
+| `web/favicon.ico` | The page's icon: the Espressif logo at 16, 32 and 48 pixels, built into the firmware |
 | `web/index.html.gz` | The compressed page, generated before every build; not in version control |
 | `web/bootstrap.min.css` | Bootstrap 5.3.8, the stylesheet the page links to. Not uploaded itself; see `tools/pack_css.py` |
 | `data/` | The filesystem image: `babyname.db` and `bootstrap.min.css.gz` |
@@ -100,6 +101,7 @@ All addresses accept `GET` only.
 | `/api/count` | The number of names in a range as JSON |
 | `/api/status` | The state of the device as JSON |
 | `/bootstrap.min.css` | The Bootstrap stylesheet, gzip-compressed |
+| `/favicon.ico` | The page's icon, shown in the browser tab and in bookmarks |
 | anything else | `404`, or `405` for a method other than `GET` |
 
 ### `/api/names`
@@ -112,6 +114,8 @@ All addresses accept `GET` only.
 | `offset` | Optional, and only used when no cursor is given. The number of rows of the range before the page. Reaches any page directly, at a cost that grows with the number |
 | `sort` | Optional. The column to sort the whole range by, as its position in a row: `0` year, `1` state, `2` name, `3` total babies, `4` primary sex, `5` ratio, `6` per 100k. Pages of a sorted range are found by `offset`; a cursor is ignored. Anything but `0` to `6` is answered 400 |
 | `desc` | Optional, with `sort`. `1` puts the largest first |
+| `sex` | Optional. `M` or `F` (either case) keeps only rows with that primary sex; left out or empty, all rows. Anything else is answered 400 |
+| `limit` | Optional. Rows per page, 1 to 200 (`DB_PAGE_ROWS`); 200 when left out. Anything else is answered 400. The page asks for 10, 25, 50, 100 or 200 |
 | `v` | Optional. The database version from `/api/status`. Its presence makes the answer cacheable |
 
 The answer has this form:
@@ -126,7 +130,7 @@ A request without a range is answered `400`. A database failure before any outpu
 
 ### `/api/count`
 
-Takes the same `prefix` or `from` and `to` parameters, and `v`, and answers `{"count":1234}`. Errors are reported as for `/api/names`.
+Takes the same `prefix` or `from` and `to` parameters, `sex` and `v`, and answers `{"count":1234}`. Errors are reported as for `/api/names`.
 
 It is a separate address, and not part of every page of rows, because counting reads the whole range. The page asks for it once per search.
 
@@ -177,17 +181,18 @@ Rows, continuing after a cursor:
 Select year, state, name, total_babies, primary_sex, primary_sex_ratio, per_100k_in_state
 from gendered_names
 where name between ?1 and ?2 and (name, year, state) > (?3, ?4, ?5)
+  and (?7 = '' or primary_sex = ?7)
 order by name, year, state limit ?6
 ```
 
-`?1` and `?2` bound the names. `?3` to `?5` are the cursor: the key of the last row already shown. `?6` is the row limit.
+`?1` and `?2` bound the names. `?3` to `?5` are the cursor: the key of the last row already shown. `?6` is the row limit. `?7` is the primary sex filter: `M`, `F`, or empty, in which case `?7 = ''` is true for every row and the filter switches itself off. One compiled query therefore serves both the filtered and the unfiltered case. The other two queries carry the same filter.
 
 Rows, by position:
 
 ```sql
 Select year, state, name, total_babies, primary_sex, primary_sex_ratio, per_100k_in_state
 from gendered_names
-where name between ?1 and ?2
+where name between ?1 and ?2 and (?5 = '' or primary_sex = ?5)
 order by name, year, state limit ?3 offset ?4
 ```
 
@@ -196,8 +201,11 @@ This one reads and discards the first `?4` rows of the range before returning an
 Count:
 
 ```sql
-Select count(*) from gendered_names where name between ?1 and ?2
+Select count(*) from gendered_names
+where name between ?1 and ?2 and (?3 = '' or primary_sex = ?3)
 ```
+
+The filter has to look at each row's `primary_sex`, so it does not make a search faster: the range is walked as before and the rows of the other sex are passed over. Counting the whole table takes about 0.6 s either way.
 
 It uses the same `between`, so it counts exactly the rows that paging through the range returns.
 
@@ -265,7 +273,9 @@ The HTTP status and headers of `/api/names` are sent together with the first chu
 
 `web/index.html` is the whole user interface. It is not stored on the board's filesystem: the build embeds it into the firmware, compressed, and `src/web_handlers.cpp` sends it for `/` and `/query_db`.
 
-Before every build PlatformIO runs `tools/pack_page.py` (`extra_scripts` in `platformio.ini`), which gzip-compresses the page into `web/index.html.gz`; `board_build.embed_files` then copies that file into the firmware. The board sends it exactly as stored, with `Content-Encoding: gzip`, and the browser unpacks it: about 4.9 KB on the wire instead of 14.3 KB, and 9 KB less firmware. Every browser accepts gzip, so no uncompressed copy is kept. A tool that does not unpack gzip, such as `curl` without `--compressed`, receives the compressed bytes. Edit `index.html` only; the `.gz` file is regenerated and is not in version control. After changing the page, the firmware has to be rebuilt and uploaded; uploading the filesystem does not update it.
+Before every build PlatformIO runs `tools/pack_page.py` (`extra_scripts` in `platformio.ini`), which gzip-compresses the page into `web/index.html.gz`; `board_build.embed_files` then copies that file into the firmware, together with `web/favicon.ico`.
+
+The icon is the Espressif logo (Espressif makes the ESP32), taken from Espressif's own GitHub organisation and converted to a three-size `.ico` file. The board sends it for `/favicon.ico`, which the page also names in a `<link rel='icon'>`, with `Cache-Control: public, max-age=604800`, so a browser asks for it again at most once a week. It is in the firmware rather than on the filesystem so that it shows even when the filesystem is missing. The board sends it exactly as stored, with `Content-Encoding: gzip`, and the browser unpacks it: about 4.9 KB on the wire instead of 14.3 KB, and 9 KB less firmware. Every browser accepts gzip, so no uncompressed copy is kept. A tool that does not unpack gzip, such as `curl` without `--compressed`, receives the compressed bytes. Edit `index.html` only; the `.gz` file is regenerated and is not in version control. After changing the page, the firmware has to be rebuilt and uploaded; uploading the filesystem does not update it.
 
 The file itself contains no comments, to keep it small on the wire. This section is its documentation.
 
@@ -284,8 +294,8 @@ Because the address always describes the search, results can be bookmarked and s
 - **Header.** A coloured bar with the title, the uptime and the theme switcher. A `span` with the id `uptime` shows `...` until the script fills it in from `/api/status`. The switcher is three radio buttons named `theme`, `themeLight`, `themeDark` and `themeAuto`, drawn as a button group of three icons from Bootstrap Icons 1.13.2: `bi-sun` for light, `bi-moon` for dark and `bi-display` for auto. The icons are written into the page as inline SVG, so no icon font or extra file is loaded; they take their colour from the button (`fill='currentColor'`). Each button has a tooltip and a hidden text label for screen readers.
 - **Problem line.** A red alert box with the id `problem`, hidden unless the board reports that the filesystem is not mounted or the database is not open.
 - **Crash notice.** A yellow alert box with the id `crash`, shown when the board reports a waiting crash dump.
-- **Two forms**, `prefixForm` and `rangeForm`, together in one card. They still declare method `GET` and action `/`, which is what they would do without the script, but the script handles their submission. The `id` attributes of the fields let the script read them and write the current search back.
-- **Results area.** A `div` with the id `results`, hidden while there is no search. The table inside is hidden separately, so an empty result shows just the status line. The table heading (`head`) is clickable for sorting. Above and below the table is a pager, `pagerTop` and `pagerBottom`: two empty lists that the script fills in.
+- **Two forms**, `prefixForm` and `rangeForm`, together in one card, with the primary sex filter (`sex`: All, Male, Female) below them. They still declare method `GET` and action `/`, which is what they would do without the script, but the script handles their submission. The `id` attributes of the fields let the script read them and write the current search back.
+- **Results area.** A `div` with the id `results`, hidden while there is no search. The table inside is hidden separately, so an empty result shows just the status line. The table heading (`head`) is clickable for sorting. Above and below the table is a toolbar: a pager on the left, `pagerTop` and `pagerBottom`, two empty lists that the script fills in, and a "Rows per page" list on the right, `perPageTop` and `perPageBottom`.
 
 ### Styling
 
@@ -319,7 +329,8 @@ Two things to keep in mind when changing the markup:
 | `page` | The number of the page being shown, counting from 0 |
 | `cursors` | `cursors[i]` is the row that produces page `i`; `null` for page 0. Keeping all of them is what makes "previous" possible: going back is asking again with an earlier cursor |
 | `starts` | `starts[i]` is how many rows come before page `i`, used for the "Rows 201 to 400" text and as the position when a page is requested without a cursor |
-| `pageSize` | How many rows the board puts on a full page. Learned from the first page when more rows follow; `0` until then |
+| `perPage` | Rows per page: 10, 25, 50, 100 or 200. 50 at first, then the user's choice, which is kept in `localStorage` under `perPage` |
+| `sexFilter` | The primary sex filter: `''`, `'M'` or `'F'`. Not remembered across visits |
 | `total` | The number of rows in the whole search, from `/api/count`; `null` until it arrives |
 | `pageRows`, `pageMore`, `pageError`, `pageLoaded` | The rows of the page being shown, in the order the board sent them; whether more follow; an error text; and whether the page has arrived |
 | `sortColumn`, `sortDescending` | The column the search is sorted by (`-1` for none, which means name order) and the direction |
@@ -338,7 +349,7 @@ Two things to keep in mind when changing the markup:
 - **`startSearch(newQuery)`** begins a search: it resets the paging state, shows or hides the results area, writes the search into the form fields, and then calls `load()` and `loadTotal()`. The rows are requested first, so they arrive before the count.
 - **`load()`** fetches the current page of rows.
   - If the cursor for the page is known, it is added to the request. A row is `[year, state, name, ...]`, so the cursor's name is at index 2, its year at index 0 and its state at index 1.
-  - If it is not known, which happens after a jump, the page is requested by position: `offset` is the page number times `pageSize`.
+  - If it is not known, which happens after a jump, the page is requested by position: `offset` is the page number times `perPage`. Every request carries `limit`, set to `perPage`.
   - Everything in both pagers is disabled while the request runs, so a second click cannot start another request.
   - If the board cannot be reached, or the answer is not valid JSON, the status line reports the failure and "first" and "previous" are enabled again so the user is not stuck.
 - **`loadTotal()`** fetches the row count for the search. A failure is ignored: the status line then simply shows no total, and "last" stays unavailable.
@@ -385,6 +396,12 @@ Each item only changes `page` and calls `load()`. A page number has a cursor if 
 
 "last" depends on the total because the number of the last page is worked out from it. When the result fits on one page, both pagers are hidden.
 
+### Rows per page and the primary sex filter
+
+The two "Rows per page" lists, above and below the table, always show the same value; changing either one changes both. The choice starts the search again from its first page and is remembered by the browser. The default is 50.
+
+The primary sex list in the search card keeps only male or only female rows, or all. Changing it starts the current search again; the choice then stays for the following searches, like the sort order. Both values go into every request as `limit` and `sex`, and the filter into the count as well, so the status line and the pager count only the rows that are shown.
+
 ### Sorting
 
 Clicking a column heading sorts the whole search by that column, not just the rows on screen: the search starts again from its first page, with `sort` in every request. A second click reverses the order and a third returns to name order. The chosen sort is kept when starting another search.
@@ -411,9 +428,9 @@ Run these from the project folder.
 
 Both test scripts default to `http://esp32.local`. Passing the board's IP address avoids a name lookup of about a second per request on Windows. Both need only the Python standard library. On this PC, Python is the one that comes with PlatformIO: `%USERPROFILE%\.platformio\penv\Scripts\python.exe`.
 
-**`tools/test_api.py`** fetches every page of a set of ranges and prefixes and compares the rows, and the counts, with the same queries run on `data/babyname.db`. It also checks the error answers, the caching headers, that the page arrives compressed and unpacks to `web/index.html`, that the stylesheet arrives compressed and unpacks to `web/bootstrap.min.css`, that the database file cannot be fetched by address, pages requested by position, including the last page of the whole table, and sorted pages: three ranges by every column in both directions, and the whole table, each compared with the same sort done by SQLite on the PC. It makes 60 checks.
+**`tools/test_api.py`** fetches every page of a set of ranges and prefixes and compares the rows, and the counts, with the same queries run on `data/babyname.db`. It also checks the error answers, the caching headers, that the page arrives compressed and unpacks to `web/index.html`, that the icon arrives unchanged, that the stylesheet arrives compressed and unpacks to `web/bootstrap.min.css`, that the database file cannot be fetched by address, pages requested by position, including the last page of the whole table, every combination of 25 or 200 rows per page with no filter, male and female on two ranges, invalid values for both, and sorted pages: three ranges by every column in both directions, and the whole table, each compared with the same sort done by SQLite on the PC. It makes 85 checks.
 
-**`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display, that the Bootstrap stylesheet is applied, the light and dark theme (Auto following a system setting the browser is told to pretend, both fixed choices, and a choice surviving a reload), that the crash notice matches what the board reports, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, the first and last buttons, the page numbers and both pagers, sorting the whole search by a column in both directions and across pages and searches, searching from both forms without a reload, an empty result, and the back button. It makes 61 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
+**`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display, that the Bootstrap stylesheet is applied, the light and dark theme (Auto following a system setting the browser is told to pretend, both fixed choices, and a choice surviving a reload), that the crash notice matches what the board reports, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, the first and last buttons, the page numbers and both pagers, sorting the whole search by a column in both directions and across pages and searches, searching from both forms without a reload, an empty result, and the back button. It makes 71 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
 
 Both passed in full against the firmware described here.
 

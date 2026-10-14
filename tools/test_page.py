@@ -305,6 +305,11 @@ def click(browser, button, pager="pagerTop"):
     browser.run(pager_button(button, pager) + ".click()")
 
 
+def choose(browser, select, value):
+    """Picks a value in a drop-down list, the way a person would."""
+    browser.run("var s = document.getElementById('%s'); s.value = '%s'; s.dispatchEvent(new Event('change'))" % (select, value))
+
+
 def pager_labels(browser, pager="pagerTop"):
     """The labels of a pager's items, with the current page in brackets."""
     return browser.run("Array.from(document.getElementById('%s').children).map(function (item) {"
@@ -392,6 +397,44 @@ def main():
 
         browser.run("document.getElementById('themeAuto').click()")
         check(browser.wait_for(THEME + " == 'light'"), "'Auto' follows the system again")
+
+        # --- Rows per page and the primary sex filter ---------------------------
+        print("\nRows per page and the primary sex filter")
+        mar_f = [row for row in mar if row[4] == "F"]
+        mar_m = [row for row in mar if row[4] == "M"]
+
+        def rows_of(start, count, of):
+            return "Rows %d to %d of %d" % (start + 1, start + count, of)
+
+        browser.open(base + "/?prefix=Mar")
+        check(wait_status(browser, rows_of(0, 50, len(mar))) and wait_table(browser, mar[:50]), "50 rows per page at first: " + rows_of(0, 50, len(mar)))
+        check(browser.run("[document.getElementById('perPageTop').value, document.getElementById('perPageBottom').value]") == ["50", "50"],
+              "both 'Rows per page' lists show 50")
+
+        choose(browser, "perPageBottom", "25")
+        check(wait_table(browser, mar[:25]) and wait_status(browser, rows_of(0, 25, len(mar))), "25 chosen below the table: " + rows_of(0, 25, len(mar)))
+        check(browser.run("document.getElementById('perPageTop').value") == "25", "the list above the table follows")
+        click(browser, "next")
+        check(wait_table(browser, mar[25:50]), "'next' shows rows 26 to 50")
+
+        choose(browser, "sex", "F")
+        check(wait_table(browser, mar_f[:25]) and wait_status(browser, rows_of(0, 25, len(mar_f))),
+              "'Female' keeps only female rows: " + rows_of(0, 25, len(mar_f)))
+        last_f = (len(mar_f) - 1) // 25 * 25
+        click(browser, "last")
+        check(wait_table(browser, mar_f[last_f:]), "'last' shows the last %d female rows" % (len(mar_f) - last_f))
+        choose(browser, "sex", "M")
+        check(wait_table(browser, mar_m[:25]) and wait_status(browser, rows_of(0, 25, len(mar_m))),
+              "'Male' keeps only male rows: " + rows_of(0, 25, len(mar_m)))
+        choose(browser, "sex", "")
+        check(wait_table(browser, mar[:25]), "'All' shows every row again")
+
+        # The rest of this test was written for 200 rows per page. The choice is
+        # remembered by the browser, which is checked here as well.
+        choose(browser, "perPageTop", "200")
+        browser.open(base + "/?prefix=Mar")
+        check(wait_status(browser, rows_of(0, 200, len(mar))) and browser.run("document.getElementById('perPageBottom').value") == "200",
+              "200 rows per page is remembered after a reload")
 
         # The crash notice must be shown exactly when the board says a crash
         # dump is waiting. The board is asked from inside the page.

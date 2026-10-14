@@ -110,6 +110,8 @@ public:
      *
      * from, to   The first and last name of the range, both included. Names
      *            are compared without regard to case, so "bob" finds "Bob".
+     * sex        "M" or "F" to keep only rows with that primary sex, or ""
+     *            for all rows.
      * after      The last row of the previous page, or nullptr for the first
      *            page.
      * limit      The largest number of rows to return (at least 1).
@@ -132,7 +134,7 @@ public:
      * from, to and the strings in the cursor are used in place, not copied.
      * They must stay valid until getPage() returns.
      */
-    bool getPage(const char *from, const char *to, const Cursor *after, int limit, const ChunkSink &emit);
+    bool getPage(const char *from, const char *to, const char *sex, const Cursor *after, int limit, const ChunkSink &emit);
 
     /*
      * Produces the page that starts at a given position in the range: the
@@ -148,7 +150,7 @@ public:
      * Everything else - the document, the return value, the lifetime of the
      * strings - is as described for getPage().
      */
-    bool getPageAt(const char *from, const char *to, long offset, int limit, const ChunkSink &emit);
+    bool getPageAt(const char *from, const char *to, const char *sex, long offset, int limit, const ChunkSink &emit);
 
     /* How many columns a row has, and so how many there are to sort by. */
     static const int COLUMN_COUNT = 7;
@@ -187,11 +189,11 @@ public:
      *
      * Everything else is as described for getPage().
      */
-    bool getSortedPage(const char *from, const char *to, int column, bool descending, long offset, int limit, const ChunkSink &emit);
+    bool getSortedPage(const char *from, const char *to, const char *sex, int column, bool descending, long offset, int limit, const ChunkSink &emit);
 
     /*
-     * Counts the names in a range, with the same meaning of from and to as
-     * in getPage().
+     * Counts the names in a range, with the same meaning of from, to and
+     * sex as in getPage().
      *
      * Returns the number of rows, or -1 on failure, in which case
      * lastError() holds the reason.
@@ -200,7 +202,7 @@ public:
      * size of the range: a few milliseconds for a few hundred rows, around
      * half a second for the whole table.
      */
-    long getCount(const char *from, const char *to);
+    long getCount(const char *from, const char *to, const char *sex);
 
     /*
      * A description of the most recent failure. Only meaningful right after
@@ -247,6 +249,7 @@ private:
     bool sortedValid = false;
     String sortedFrom;
     String sortedTo;
+    String sortedSex;
     char *sortedRows = nullptr;
     size_t sortedBytes = 0;
     SortEntry *sortedEntries = nullptr;
@@ -271,10 +274,10 @@ private:
     char chunk[CHUNK_SIZE];
 
     /* Fills in the parameters of the cursor query for one page. */
-    bool bindPage(const char *from, const char *to, const Cursor *after, int limit);
+    bool bindPage(const char *from, const char *to, const char *sex, const Cursor *after, int limit);
 
     /* Fills in the parameters of the position query for one page. */
-    bool bindOffsetPage(const char *from, const char *to, long offset, int limit);
+    bool bindOffsetPage(const char *from, const char *to, const char *sex, long offset, int limit);
 
     /* Steps through an already bound statement and writes its rows; sets more when rows remain. */
     bool writeRows(ChunkWriter &out, sqlite3_stmt *stmt, int limit, bool &more);
@@ -283,7 +286,7 @@ private:
     bool writePage(sqlite3_stmt *stmt, bool bound, int limit, const ChunkSink &emit);
 
     /* Makes the given range the one kept for sorting, reading it if it is not already. */
-    bool loadSortedRange(const char *from, const char *to);
+    bool loadSortedRange(const char *from, const char *to, const char *sex);
 
     /* Orders the kept range by a column, unless it already is. */
     void sortKeptRange(int column);

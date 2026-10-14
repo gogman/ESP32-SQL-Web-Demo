@@ -4,6 +4,7 @@
 <meta charset='utf-8'>
 <meta name='viewport' content='width=device-width, initial-scale=1'>
 <title>ESP32 Sqlite DB Demo</title>
+<link rel='icon' href='/favicon.ico'>
 <link rel='stylesheet' href='/bootstrap.min.css?v=5.3.8'>
 <style>
 .bi { vertical-align: -0.125em; }
@@ -46,44 +47,56 @@ applyTheme(storedTheme());
 
 <div class='card mb-4'>
 <div class='card-body'>
-<h2 class='card-title h5 mb-3'>Query gendered names database</h2>
+<h2 class='card-title h5 mb-3'>Query Baby Names Database</h2>
 <form method='GET' action='/' id='prefixForm' class='row g-2 align-items-center mb-3'>
-<label for='prefix' class='col-sm-3 col-form-label'>Names starting with</label>
+<label for='prefix' class='col-sm-3 col-form-label'>Names Starting With</label>
 <div class='col-sm'><input type='text' class='form-control' name='prefix' id='prefix'></div>
 <div class='col-sm-auto'><button type='submit' class='btn btn-primary'>Search</button></div>
 </form>
 <form method='GET' action='/' id='rangeForm' class='row g-2 align-items-center'>
-<label for='from' class='col-sm-3 col-form-label'>Names from</label>
+<label for='from' class='col-sm-3 col-form-label'>Names From</label>
 <div class='col-sm'><input type='text' class='form-control' name='from' id='from' value='Bob'></div>
 <label for='to' class='col-sm-auto col-form-label'>to</label>
 <div class='col-sm'><input type='text' class='form-control' name='to' id='to' value='Bobby'></div>
 <div class='col-sm-auto'><button type='submit' class='btn btn-primary'>Query database</button></div>
 </form>
+<div class='row g-2 align-items-center mt-1'>
+<label for='sex' class='col-sm-3 col-form-label'>Primary Sex</label>
+<div class='col-sm-auto'><select id='sex' class='form-select'><option value=''>All</option><option value='M'>Male</option><option value='F'>Female</option></select></div>
+</div>
 </div>
 </div>
 
 <div id='results' hidden>
 <p id='status' class='text-body-secondary'></p>
-<nav aria-label='Pages, above the table'><ul id='pagerTop' class='pagination flex-wrap' hidden></ul></nav>
+<div class='d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3'>
+<nav aria-label='Pages, above the table'><ul id='pagerTop' class='pagination flex-wrap mb-0' hidden></ul></nav>
+<div class='d-flex align-items-center gap-2 ms-auto'><label for='perPageTop' class='text-nowrap'>Rows per page</label><select id='perPageTop' class='form-select form-select-sm w-auto'><option>10</option><option>25</option><option selected>50</option><option>100</option><option>200</option></select></div>
+</div>
 <div class='table-responsive'>
 <table id='table' class='table table-sm table-striped table-hover table-bordered bg-body' hidden>
 <thead id='head' class='user-select-none' title='Click a column to sort all rows of the search by it'><tr><th>Year</th><th>State</th><th>Name</th><th>Total babies</th><th>Primary Sex</th><th>Ratio</th><th>Per 100k</th></tr></thead>
 <tbody id='rows'></tbody>
 </table>
 </div>
-<nav aria-label='Pages, below the table'><ul id='pagerBottom' class='pagination flex-wrap mb-4' hidden></ul></nav>
+<div class='d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4'>
+<nav aria-label='Pages, below the table'><ul id='pagerBottom' class='pagination flex-wrap mb-0' hidden></ul></nav>
+<div class='d-flex align-items-center gap-2 ms-auto'><label for='perPageBottom' class='text-nowrap'>Rows per page</label><select id='perPageBottom' class='form-select form-select-sm w-auto'><option>10</option><option>25</option><option selected>50</option><option>100</option><option>200</option></select></div>
+</div>
 </div>
 </main>
 
 <script>
 var COLUMNS = ['Year', 'State', 'Name', 'Total babies', 'Primary Sex', 'Ratio', 'Per 100k'];
 var PAGERS = ['pagerTop', 'pagerBottom'];
+var PER_PAGE = ['perPageTop', 'perPageBottom'];
 var PAGES_AROUND = 2;
 
 var query = null;
 var searchId = 0;
 var cursors = [null], starts = [0], page = 0;
-var pageSize = 0;
+var perPage = storedPerPage();
+var sexFilter = '';
 var total = null;
 var pageRows = [], pageMore = false, pageError = '', pageLoaded = false;
 var sortColumn = -1, sortDescending = false;
@@ -112,8 +125,15 @@ function readAddress() {
   return null;
 }
 
+function storedPerPage() {
+  var stored = 0;
+  try { stored = Number(localStorage.getItem('perPage')); } catch (error) {}
+  return [10, 25, 50, 100, 200].indexOf(stored) >= 0 ? stored : 50;
+}
+
 function requestParams() {
   var request = new URLSearchParams(query);
+  if (sexFilter) request.set('sex', sexFilter);
   if (dbVersion) request.set('v', dbVersion);
   return request;
 }
@@ -133,7 +153,6 @@ function startSearch(newQuery) {
   cursors = [null];
   starts = [0];
   page = 0;
-  pageSize = 0;
   total = null;
   element('results').hidden = !query;
   if (!query) return;
@@ -153,6 +172,7 @@ function load() {
   var id = searchId;
   var request = requestParams();
   var after = sortColumn < 0 ? cursors[page] : null;
+  request.set('limit', perPage);
   if (sortColumn >= 0) {
     request.set('sort', sortColumn);
     if (sortDescending) request.set('desc', 1);
@@ -162,7 +182,7 @@ function load() {
     request.set('after_year', after[0]);
     request.set('after_state', after[1]);
   } else if (page > 0) {
-    starts[page] = page * pageSize;
+    starts[page] = page * perPage;
     request.set('offset', starts[page]);
   }
 
@@ -200,7 +220,6 @@ function show(data) {
   pageLoaded = true;
 
   if (pageMore) {
-    if (page == 0) pageSize = pageRows.length;
     cursors[page + 1] = pageRows[pageRows.length - 1];
     starts[page + 1] = starts[page] + pageRows.length;
   }
@@ -211,7 +230,7 @@ function show(data) {
 }
 
 function lastPage() {
-  return total != null && pageSize > 0 ? Math.max(Math.ceil(total / pageSize) - 1, 0) : -1;
+  return total != null ? Math.max(Math.ceil(total / perPage) - 1, 0) : -1;
 }
 
 function addPageItem(list, label, target, enabled, name) {
@@ -320,6 +339,21 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function (
 });
 
 PAGERS.forEach(function (id) { element(id).onclick = pagerClick; });
+
+PER_PAGE.forEach(function (id) {
+  element(id).value = perPage;
+  element(id).onchange = function () {
+    perPage = Number(element(id).value);
+    PER_PAGE.forEach(function (other) { element(other).value = perPage; });
+    try { localStorage.setItem('perPage', perPage); } catch (error) {}
+    if (query) startSearch(query);
+  };
+});
+
+element('sex').onchange = function () {
+  sexFilter = element('sex').value;
+  if (query) startSearch(query);
+};
 
 element('head').onclick = function (event) {
   var cell = event.target.closest('th');

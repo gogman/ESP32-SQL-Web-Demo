@@ -92,9 +92,11 @@ static const char DB_PATH[] = "/littlefs" DB_FILE;
 static const int DB_CACHE_KIB = 1024;
 
 /*
- * How many rows /api/names returns per request, and therefore how many rows
- * the page shows at a time. Larger pages mean fewer requests but a longer
- * wait for each one; 200 rows take roughly a tenth of a second.
+ * The most rows /api/names returns per request, and the number it returns
+ * when the request does not say ("limit"). The page asks for fewer, 50 by
+ * default, and lets the user choose up to this many. Larger pages mean
+ * fewer requests but a longer wait for each one; 200 rows take roughly a
+ * tenth of a second.
  */
 static const int DB_PAGE_ROWS = 200;
 

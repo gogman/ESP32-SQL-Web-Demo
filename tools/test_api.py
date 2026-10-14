@@ -191,6 +191,35 @@ def main():
     check(status == 200 and len(data.get("rows", [])) == everything - offset and data.get("more") is False,
           "the last page of the whole table (position %d): %d rows in %.0f ms" % (offset, len(data.get("rows", [])), ms))
 
+    # --- Page size and the primary sex filter ---------------------------------
+    # "limit" sets the rows per page (1 to 200) and "sex" keeps only rows whose
+    # primary sex is M or F. Every combination is paged through to the end with
+    # cursors, as the page does, and compared with the same filter run by
+    # SQLite on the PC; the count must agree too.
+    print("\nPage size and primary sex filter")
+    for low, high in (("Mar", "Mar\U0010ffff"), ("S", "T")):
+        for sex in ("", "M", "F"):
+            filtered = RANGE_SQL.replace("where name between ? and ?", "where name between ? and ? and (? = '' or primary_sex = ?)")
+            want = [list(row) for row in database.execute(filtered, (low, high, sex, sex))]
+            for limit in (25, 200):
+                rows, pages, first, _, _ = fetch_all(base, {"from": low, "to": high, "sex": sex, "limit": limit})
+                check(rows == want and pages == max(-(-len(want) // limit), 1),
+                      "%s..%s, sex %-3r, %3d per page: %4d rows in %2d pages, first page %3.0f ms"
+                      % (low, high[:1], sex, limit, len(rows), pages, first))
+            status, _, body, ms = request(base, "/api/count?" + urllib.parse.urlencode({"from": low, "to": high, "sex": sex}))
+            check(json.loads(body).get("count") == len(want), "%s..%s, sex %-3r counted as %d in %.0f ms" % (low, high[:1], sex, len(want), ms))
+
+    # The filter on the whole table, sorted, and found by position.
+    want = [list(row) for row in database.execute(
+        RANGE_SQL.replace("where name between ? and ? ", "where primary_sex = 'F' ")
+                 .replace("order by name, year, state", "order by total_babies desc, name desc, year desc, state desc"))]
+    status, _, body, ms = request(base, "/api/names?" + urllib.parse.urlencode({"prefix": "", "sex": "f", "sort": 3, "desc": 1, "limit": 50, "offset": 100}))
+    check(json.loads(body).get("rows") == want[100:150], "the whole table, female only (sex=f), sorted by total, 50 rows from position 100, %.0f ms" % ms)
+
+    for name, value in (("sex", "X"), ("sex", "male"), ("limit", "0"), ("limit", "201"), ("limit", "ten")):
+        status, _, body, _ = request(base, "/api/names?" + urllib.parse.urlencode({"from": "Bob", "to": "Bobby", name: value}))
+        check(status == 400 and "error" in json.loads(body), "%s=%r is answered 400" % (name, value))
+
     # --- Sorted pages --------------------------------------------------------
     # "sort" names a column by its position in a row and makes the board sort
     # the whole range by it; "desc=1" turns the order around. Rows with equal
@@ -300,6 +329,13 @@ def main():
           "the stylesheet is served as gzip-compressed CSS, %d bytes in %.0f ms" % (len(body), ms))
     check(status == 200 and gzip.decompress(body) == source, "and unpacks to web/bootstrap.min.css")
     check("immutable" in headers.get("Cache-Control", ""), "the stylesheet may be cached (%s)" % headers.get("Cache-Control"))
+
+    # The page's icon, built into the firmware: it must arrive unchanged.
+    status, headers, body, _ = request(base, "/favicon.ico")
+    with open(os.path.join(PROJECT, "web", "favicon.ico"), "rb") as file:
+        icon = file.read()
+    check(status == 200 and headers.get("Content-Type") == "image/x-icon" and body == icon,
+          "the icon is served as image/x-icon, %d bytes, identical to web/favicon.ico" % len(body))
 
     # Nothing else on the filesystem is published, so neither the removed file
     # listing nor the database file itself may be reachable by address.
