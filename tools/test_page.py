@@ -420,6 +420,43 @@ def main():
         browser.run("document.getElementById('themeAuto').click()")
         check(browser.wait_for(THEME + " == 'light'"), "'Auto' follows the system again")
 
+        # --- The loading overlay -------------------------------------------------
+        # While the page waits for rows, a spinner with "Loading..." covers the
+        # page, centred, over a darkened background. It fades in after 0.15 s, so
+        # a fast answer does not flash it; the layout is there before that.
+        print("\nThe loading overlay")
+        LOADING = "document.getElementById('loading')"
+        check(browser.run("getComputedStyle(%s).visibility" % LOADING) == "hidden", "it is hidden while nothing is loading")
+        shown = browser.run("document.getElementById('prefix').value = 'Mar'; document.getElementById('prefixForm').requestSubmit(); "
+                            "%s.classList.contains('show')" % LOADING)
+        check(shown, "a search shows it at once")
+        check(browser.wait_for("!%s.classList.contains('show')" % LOADING) and wait_status(browser, "Rows 1 to 50 of %d" % len(mar)),
+              "and it goes away when the rows are there")
+
+        browser.run("showLoading(true)")
+        check(browser.wait_for("getComputedStyle(%s).opacity == '1'" % LOADING), "it fades in fully while loading takes longer")
+        box = browser.run("(function () { var r = %s.firstElementChild.getBoundingClientRect();"
+                          " return [r.left + r.width / 2 - document.documentElement.clientWidth / 2, r.top + r.height / 2 - innerHeight / 2,"
+                          " %s.getBoundingClientRect().width == document.documentElement.clientWidth,"
+                          " %s.getBoundingClientRect().height == innerHeight]; })()" % (LOADING, LOADING, LOADING))
+        check(abs(box[0]) <= 1 and abs(box[1]) <= 1 and box[2] and box[3],
+              "it covers the window, with the spinner centred both ways (off by %.1f, %.1f px)" % (box[0], box[1]))
+        check(browser.run("getComputedStyle(%s).backgroundColor" % LOADING) == "rgba(0, 0, 0, 0.25)", "the background darkens the page slightly")
+        check(browser.run("%s.querySelector('.spinner-border') != null && %s.textContent.trim() == 'Loading...'" % (LOADING, LOADING)),
+              "the spinner has 'Loading...' below it")
+        LOOK = ("(function () { var box = %s.firstElementChild; return [getComputedStyle(box).backgroundColor, getComputedStyle(box).color,"
+                " getComputedStyle(box.querySelector('.spinner-border')).color]; })()" % LOADING)
+        light_look = browser.run(LOOK)
+        browser.run("document.getElementById('themeDark').click()")
+        browser.wait_for(THEME + " == 'dark'")
+        dark_look = browser.run(LOOK)
+        check(light_look[0] != dark_look[0] and light_look[1] != dark_look[1],
+              "its box and text follow the theme (light %s on %s, dark %s on %s)" % (light_look[1], light_look[0], dark_look[1], dark_look[0]))
+        browser.run("document.getElementById('themeAuto').click()")
+        browser.wait_for(THEME + " == 'light'")
+        browser.run("showLoading(false)")
+        check(browser.wait_for("getComputedStyle(%s).visibility == 'hidden'" % LOADING), "it can be hidden again")
+
         # --- Rows per page and the primary sex filter ---------------------------
         print("\nRows per page and the primary sex filter")
         mar_f = [row for row in mar if row[4] == "F"]

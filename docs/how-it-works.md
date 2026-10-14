@@ -306,10 +306,11 @@ Because the address always describes the search, results can be bookmarked and s
 - **Crash notice.** A yellow alert box with the id `crash`, shown when the board reports a waiting crash dump.
 - **Two forms**, `prefixForm` and `rangeForm`, together in one card, with the primary sex filter (`sex`: All, Male, Female) below them. They still declare method `GET` and action `/`, which is what they would do without the script, but the script handles their submission. The `id` attributes of the fields let the script read them and write the current search back.
 - **Results area.** A `div` with the id `results`, hidden while there is no search. The table inside is hidden separately, so an empty result shows just the status line. The table heading (`head`) is clickable for sorting. Above and below the table is a toolbar: a pager on the left, `pagerTop` and `pagerBottom`, two empty lists that the script fills in, and a "Rows per page" list on the right, `perPageTop` and `perPageBottom`.
+- **Loading overlay.** A `div` with the id `loading` that covers the whole window while rows are on their way. In its centre is a small box with a spinner and "Loading..." below it. See "The loading overlay" below.
 
 ### Styling
 
-The look comes from Bootstrap's classes in the markup. The page has two style rules of its own. One lines the icons up with the text, as the Bootstrap Icons stylesheet would (`vertical-align: -0.125em`). The other is for the table heading: a pointer cursor, which Bootstrap has no class for, and Bootstrap's "primary subtle" colours, set through the table's colour variables. Bootstrap's own `table-primary` would look the same in light mode but stays light blue in dark mode.
+The look comes from Bootstrap's classes in the markup. The page has its own style rules for three things. One lines the icons up with the text, as the Bootstrap Icons stylesheet would (`vertical-align: -0.125em`). The other is for the table heading: a pointer cursor, which Bootstrap has no class for, and Bootstrap's "primary subtle" colours, set through the table's colour variables. Bootstrap's own `table-primary` would look the same in light mode but stays light blue in dark mode. The third is the loading overlay, described below.
 
 | Part | Bootstrap classes |
 |---|---|
@@ -321,12 +322,13 @@ The look comes from Bootstrap's classes in the markup. The page has two style ru
 | Search forms | `card`, the grid (`row`, `col-sm`), `form-control`, `btn btn-primary` |
 | Table | `table table-sm table-striped table-hover table-bordered` inside `table-responsive`, which lets a wide table scroll sideways on a narrow screen |
 | Pagers | `pagination` with `page-item` and `page-link`; `active` marks the current page and `disabled` an unavailable item |
+| Loading overlay | `position-fixed top-0 start-0 w-100 h-100` and flex centring for the cover; `bg-body text-body border rounded-3 shadow` for the box; `spinner-border text-primary` for the spinner |
 
 Number cells are right-aligned: `render()` gives every cell holding a number the class `text-end`.
 
 Two things to keep in mind when changing the markup:
 
-- The script hides elements with the `hidden` attribute. Bootstrap's display classes such as `d-flex` override that attribute, so they must not be put on `problem`, `crash`, `results` or `table`.
+- The script hides elements with the `hidden` attribute. Bootstrap's display classes such as `d-flex` override that attribute, so they must not be put on `problem`, `crash`, `results` or `table`. The loading overlay does use `d-flex`, so it is hidden with its own style rule instead.
 - If the stylesheet cannot be loaded, the page still works, unstyled.
 
 ### Script variables
@@ -344,6 +346,7 @@ Two things to keep in mind when changing the markup:
 | `total` | The number of rows in the whole search, from `/api/count`; `null` until it arrives |
 | `pageRows`, `pageMore`, `pageError`, `pageLoaded` | The rows of the page being shown, in the order the board sent them; whether more follow; an error text; and whether the page has arrived |
 | `sortColumn`, `sortDescending` | The column the search is sorted by (`-1` for none, which means name order) and the direction |
+| `loadNumber` | Counts the requests made by `load()`, so that only the latest one hides the loading overlay |
 | `dbVersion` | The database version from `/api/status`, added to every data request as `v` so the browser can cache the answers |
 
 ### Script functions
@@ -354,6 +357,7 @@ Two things to keep in mind when changing the markup:
 - **`formatUptime(seconds)`** writes seconds as days, hours, minutes and seconds, for example 90061 as `1d 1:01:01` and 3725 as `0d 1:02:05`.
 - **`startUptime(seconds)`** shows the uptime the board reported and from then on adds the time that has passed, once a second. The board is not asked again: its clock and the browser's run at the same speed, so counting on locally gives the same result without a request every second to a server that answers one request at a time. The time passed is measured with `performance.now()`, which is not affected when the computer's clock is set. A browser slows timers in a background tab, but each update is worked out afresh from the clock, so the display is right again as soon as the tab is shown.
 - **`showProblem(text)`** shows or hides the problem line.
+- **`showLoading(on)`** shows or hides the loading overlay.
 - **`readAddress()`** turns the page's address into a search, or `null`. If only one of `from` and `to` is present, the other is taken as empty.
 - **`requestParams()`** builds the parameters every data request shares: the search and the database version.
 - **`fetchJson(url)`** fetches an address and reads the answer as JSON. The board sends errors as JSON too; if the status says failure but the document has no `error` member, one is added.
@@ -406,6 +410,12 @@ The same pager is shown above and below the table, built from Bootstrap's pagina
 Each item only changes `page` and calls `load()`. A page number has a cursor if that page's predecessor was visited; otherwise the page is fetched by position. "next" always has a cursor, saved when the current page arrived. "last" usually has none, so that page is fetched by position, and so is "previous" from there. Pages reached that way record their own cursor for the page after them, so moving forward again uses cursors.
 
 "last" depends on the total because the number of the last page is worked out from it. When the result fits on one page, both pagers are hidden.
+
+### The loading overlay
+
+`load()` shows the overlay each time it asks for a page of rows, and hides it when the answer, or a failure, has been handled. It is drawn over everything (`z-index` 1090, above Bootstrap's own layers), so the page cannot be clicked while it is up. The cover is black at 25 % opacity, which darkens the page slightly in either theme. The box in the middle uses Bootstrap's body colours and the spinner the primary colour, so both follow the light and dark theme.
+
+It is hidden with `visibility: hidden` and `opacity: 0`, and shown by adding the class `show`. The fade-in starts only after 0.15 s and takes 0.15 s, so a page that comes from the browser's cache, or a fast answer, does not make it flash; hiding it is immediate. Each call of `load()` gets a number (`loadNumber`), and only the answer to the latest request hides the overlay, so a slow earlier answer cannot hide it while a newer request is still waiting. The total count, fetched alongside, does not show it.
 
 ### Rows per page and the primary sex filter
 
@@ -466,7 +476,7 @@ A full run takes about a minute and a half: 30 to 40 s to build and upload, unde
 
 **`tools/test_api.py`** fetches every page of a set of ranges and prefixes and compares the rows, and the counts, with the same queries run on `data/babyname.db`. It also checks the error answers, the caching headers, that the page arrives compressed and unpacks to `web/index.html`, that the icon arrives unchanged, that the stylesheet arrives compressed and unpacks to `web/bootstrap.min.css`, that the database file cannot be fetched by address, pages requested by position, including the last page of the whole table, that a request without `limit` gets 50 rows, every combination of 25 or 200 rows per page with no filter, male and female on two ranges, invalid values for both, and sorted pages: three ranges by every column in both directions, and the whole table, each compared with the same sort done by SQLite on the PC. It makes 86 checks.
 
-**`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display (its format, that it counts on by itself, and the conversion into days, hours, minutes and seconds), that the Bootstrap stylesheet is applied, the light and dark theme (Auto following a system setting the browser is told to pretend, both fixed choices, and a choice surviving a reload), that the crash notice matches what the board reports, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, the first and last buttons, the page numbers and both pagers, sorting the whole search by a column in both directions and across pages and searches, searching from both forms without a reload, an empty result, the back button, and the rows per page with the primary sex filter, including that the page opens at 50 rows again after a reload. It makes 74 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
+**`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display (its format, that it counts on by itself, and the conversion into days, hours, minutes and seconds), that the Bootstrap stylesheet is applied, the light and dark theme (Auto following a system setting the browser is told to pretend, both fixed choices, and a choice surviving a reload), that the crash notice matches what the board reports, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, the first and last buttons, the page numbers and both pagers, sorting the whole search by a column in both directions and across pages and searches, searching from both forms without a reload, an empty result, the back button, and the rows per page with the primary sex filter, including that the page opens at 50 rows again after a reload, and the loading overlay: shown at once by a search and gone when the rows are there, covering the window with its box centred both ways, the darkened background, the text, and its colours in both themes. It makes 83 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
 
 Both passed in full against the firmware described here.
 
