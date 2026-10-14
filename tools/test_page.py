@@ -310,6 +310,13 @@ def choose(browser, select, value):
     browser.run("var s = document.getElementById('%s'); s.value = '%s'; s.dispatchEvent(new Event('change'))" % (select, value))
 
 
+def open_at(browser, url, rows):
+    """Opens the page and picks a number of rows per page. The page always
+    opens at 50; choosing another number starts its search again."""
+    browser.open(url)
+    choose(browser, "perPageTop", str(rows))
+
+
 def pager_labels(browser, pager="pagerTop"):
     """The labels of a pager's items, with the current page in brackets."""
     return browser.run("Array.from(document.getElementById('%s').children).map(function (item) {"
@@ -444,12 +451,15 @@ def main():
         choose(browser, "sex", "")
         check(wait_table(browser, mar[:25]), "'All' shows every row again")
 
-        # The rest of this test was written for 200 rows per page. The choice is
-        # remembered by the browser, which is checked here as well.
+        # The choice is not remembered: a reload opens at 50 again.
         choose(browser, "perPageTop", "200")
+        check(wait_status(browser, rows_of(0, 200, len(mar))), "200 chosen: " + rows_of(0, 200, len(mar)))
         browser.open(base + "/?prefix=Mar")
-        check(wait_status(browser, rows_of(0, 200, len(mar))) and browser.run("document.getElementById('perPageBottom').value") == "200",
-              "200 rows per page is remembered after a reload")
+        check(wait_status(browser, rows_of(0, 50, len(mar))) and browser.run("[document.getElementById('perPageTop').value, document.getElementById('perPageBottom').value]") == ["50", "50"],
+              "a reload opens at 50 rows per page again")
+
+        # The rest of this test was written for 200 rows per page, so every page
+        # it opens from here on is switched to 200 first (open_at).
 
         # The crash notice must be shown exactly when the board says a crash
         # dump is waiting. The board is asked from inside the page.
@@ -459,7 +469,7 @@ def main():
 
         # --- A search given in the address --------------------------------------
         print("\nA range in the address")
-        browser.open(base + "/?from=Bob&to=Bobby")
+        open_at(browser, base + "/?from=Bob&to=Bobby", page_size)
         check(wait_status(browser, "Rows 1 to %d of %d" % (len(bob), len(bob))), "the status shows the rows and the total")
         check(browser.run(TABLE) == as_shown(bob), "the table shows the %d rows of the database" % len(bob))
         check(browser.run("[document.getElementById('from').value, document.getElementById('to').value]") == ["Bob", "Bobby"],
@@ -470,13 +480,13 @@ def main():
               "and both pagers are hidden")
 
         print("\nThe address of the former results page")
-        browser.open(base + "/query_db?from=Bob&to=Bobby")
+        open_at(browser, base + "/query_db?from=Bob&to=Bobby", page_size)
         check(wait_status(browser, "Rows 1 to %d of %d" % (len(bob), len(bob))) and browser.run(TABLE) == as_shown(bob),
               "it shows the same results")
 
         # --- Paging --------------------------------------------------------------
         print("\nPaging through names starting with 'Mar'")
-        browser.open(base + "/?prefix=Mar")
+        open_at(browser, base + "/?prefix=Mar", page_size)
         first_status = "Rows 1 to %d of %d" % (page_size, len(mar))
         second_status = "Rows %d to %d of %d" % (page_size + 1, len(mar), len(mar))
         check(wait_status(browser, first_status), "first page: " + first_status)
@@ -509,7 +519,7 @@ def main():
         def rows_status(start, count):
             return "Rows %d to %d of %d" % (start + 1, start + count, len(s_to_t))
 
-        browser.open(base + "/?from=S&to=T")
+        open_at(browser, base + "/?from=S&to=T", page_size)
         check(wait_status(browser, rows_status(0, page_size)), "first page: " + rows_status(0, page_size))
         check(disabled(browser, "first") and disabled(browser, "previous") and not disabled(browser, "next") and not disabled(browser, "last"),
               "on the first page only 'next' and 'last' are available")
@@ -552,7 +562,7 @@ def main():
         # "stably", so rows with equal values stay in name order, which is the
         # board's rule too; descending is that order backwards.
         print("\nSorting the whole search")
-        browser.open(base + "/?prefix=Mar")
+        open_at(browser, base + "/?prefix=Mar", page_size)
         wait_status(browser, first_status)
         by_total = sorted(mar, key=lambda row: row[3])
         by_sex = sorted(mar, key=lambda row: row[4])
@@ -592,7 +602,7 @@ def main():
         # A marker is stored in the page. A reload would wipe it out, so finding
         # it again afterwards proves the page was not reloaded.
         print("\nSearching from the form")
-        browser.open(base + "/")
+        open_at(browser, base + "/", page_size)
         browser.wait_for("document.getElementById('uptime').textContent != '...'")
         browser.run("window.testMarker = 'still here'")
 

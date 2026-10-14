@@ -41,7 +41,7 @@ If the board is ever asked to write data, or is exposed to people who are not tr
 | `web/index.html` | The application page, built into the firmware compressed |
 | `web/favicon.ico` | The page's icon: the Espressif logo at 16, 32 and 48 pixels, built into the firmware |
 | `web/index.html.gz` | The compressed page, generated before every build; not in version control |
-| `web/bootstrap.min.css` | Bootstrap 5.3.8, the stylesheet the page links to. Not uploaded itself; see `tools/pack_css.py` |
+| `web/bootstrap.min.css` | Bootstrap 5.3.8 with one local change (see below), the stylesheet the page links to. Not uploaded itself; see `tools/pack_css.py` |
 | `data/` | The filesystem image: `babyname.db` and `bootstrap.min.css.gz` |
 | `tools/rebuild_db.py` | Builds `data/babyname.db` from a database in the original layout |
 | `tools/pack_page.py` | Compresses `web/index.html` into `web/index.html.gz`; PlatformIO runs it before every build |
@@ -123,7 +123,7 @@ All addresses accept `GET` only.
 | `sort` | Optional. The column to sort the whole range by, as its position in a row: `0` year, `1` state, `2` name, `3` total babies, `4` primary sex, `5` ratio, `6` per 100k. Pages of a sorted range are found by `offset`; a cursor is ignored. Anything but `0` to `6` is answered 400 |
 | `desc` | Optional, with `sort`. `1` puts the largest first |
 | `sex` | Optional. `M` or `F` (either case) keeps only rows with that primary sex; left out or empty, all rows. Anything else is answered 400 |
-| `limit` | Optional. Rows per page, 1 to 200 (`DB_PAGE_ROWS`); 200 when left out. Anything else is answered 400. The page asks for 10, 25, 50, 100 or 200 |
+| `limit` | Optional. Rows per page, 1 to 200 (`DB_PAGE_ROWS`); 50 (`DB_DEFAULT_ROWS`) when left out. Anything else is answered 400. The page asks for 10, 25, 50, 100 or 200 |
 | `v` | Optional. The database version from `/api/status`. Its presence makes the answer cacheable |
 
 The answer has this form:
@@ -161,9 +161,11 @@ It is a separate address, and not part of every page of rows, because counting r
 
 The page links to Bootstrap 5.3.8. The stylesheet is 232 KB, so it is not built into the firmware like the page. It is kept on the filesystem as `bootstrap.min.css.gz`, 31 KB, and sent exactly as stored with `Content-Encoding: gzip`; the browser unpacks it. No uncompressed copy is on the board, because every browser accepts gzip.
 
-The page asks for it as `/bootstrap.min.css?v=5.3.8`. With the version in the address, the answer is marked `public, max-age=31536000, immutable`, so a browser fetches it once and does not ask again. If the file or the filesystem is missing, the answer is a 404 and the page still works, without Bootstrap's styling.
+One change is made to the stylesheet by hand: in the light theme, cards have the background `#e3e3e3` instead of the page's white. The `.card` rule sets `--bs-card-bg:#e3e3e3`, and an added rule right after it, `[data-bs-theme=dark] .card{--bs-card-bg:var(--bs-body-bg)}`, keeps the dark theme as Bootstrap has it. A new version of Bootstrap needs the same change made again.
 
-To change the version: replace `web/bootstrap.min.css`, run `python tools/pack_css.py`, change the version in the link in `web/index.html`, then upload both the filesystem and the firmware.
+The page asks for it as `/bootstrap.min.css?v=5.3.8-1`; the `-1` counts local changes, so a browser that kept the earlier file fetches the changed one. With the version in the address, the answer is marked `public, max-age=31536000, immutable`, so a browser fetches it once and does not ask again. If the file or the filesystem is missing, the answer is a 404 and the page still works, without Bootstrap's styling.
+
+To change the version, or the stylesheet itself: replace `web/bootstrap.min.css`, run `python tools/pack_css.py`, change the version in the link in `web/index.html` (and in `tools/test_api.py`), then upload both the filesystem and the firmware.
 
 All of the page's styling comes from Bootstrap's classes; see [Styling](#styling).
 
@@ -337,7 +339,7 @@ Two things to keep in mind when changing the markup:
 | `page` | The number of the page being shown, counting from 0 |
 | `cursors` | `cursors[i]` is the row that produces page `i`; `null` for page 0. Keeping all of them is what makes "previous" possible: going back is asking again with an earlier cursor |
 | `starts` | `starts[i]` is how many rows come before page `i`, used for the "Rows 201 to 400" text and as the position when a page is requested without a cursor |
-| `perPage` | Rows per page: 10, 25, 50, 100 or 200. 50 at first, then the user's choice, which is kept in `localStorage` under `perPage` |
+| `perPage` | Rows per page: 10, 25, 50, 100 or 200. 50 whenever the page is opened, then the user's choice until the page is closed or reloaded |
 | `sexFilter` | The primary sex filter: `''`, `'M'` or `'F'`. Not remembered across visits |
 | `total` | The number of rows in the whole search, from `/api/count`; `null` until it arrives |
 | `pageRows`, `pageMore`, `pageError`, `pageLoaded` | The rows of the page being shown, in the order the board sent them; whether more follow; an error text; and whether the page has arrived |
@@ -407,7 +409,7 @@ Each item only changes `page` and calls `load()`. A page number has a cursor if 
 
 ### Rows per page and the primary sex filter
 
-The two "Rows per page" lists, above and below the table, always show the same value; changing either one changes both. The choice starts the search again from its first page and is remembered by the browser. The default is 50.
+The two "Rows per page" lists, above and below the table, always show the same value; changing either one changes both. The choice starts the search again from its first page. It is not remembered: the page always opens at 50, the same default the board uses for a request without `limit`.
 
 The primary sex list in the search card keeps only male or only female rows, or all. Changing it starts the current search again; the choice then stays for the following searches, like the sort order. Both values go into every request as `limit` and `sex`, and the filter into the count as well, so the status line and the pager count only the rows that are shown.
 
@@ -454,16 +456,17 @@ The same tests also appear in VS Code's Testing panel, through pytest and the Py
 
 ```powershell
 & "$env:USERPROFILE\.platformio\penv\Scripts\python.exe" -m venv .venv
-.venv\Scripts\python.exe -m pip install -r toolsequirements.txt
+.venv\Scripts\python.exe -m pip install -r tools
+equirements.txt
 ```
 
 The board's address comes from the environment variable `BOARD_URL`, default `http://esp32.local`. To use another, put a line such as `BOARD_URL=http://172.16.100.185` in a file named `.env` in the project folder, which the Python extension reads. From a terminal the same tests run with `.venv\Scripts\python.exe -m pytest`.
 
 A full run takes about a minute and a half: 30 to 40 s to build and upload, under 10 s for the board to restart, and about 25 s for each test.
 
-**`tools/test_api.py`** fetches every page of a set of ranges and prefixes and compares the rows, and the counts, with the same queries run on `data/babyname.db`. It also checks the error answers, the caching headers, that the page arrives compressed and unpacks to `web/index.html`, that the icon arrives unchanged, that the stylesheet arrives compressed and unpacks to `web/bootstrap.min.css`, that the database file cannot be fetched by address, pages requested by position, including the last page of the whole table, every combination of 25 or 200 rows per page with no filter, male and female on two ranges, invalid values for both, and sorted pages: three ranges by every column in both directions, and the whole table, each compared with the same sort done by SQLite on the PC. It makes 85 checks.
+**`tools/test_api.py`** fetches every page of a set of ranges and prefixes and compares the rows, and the counts, with the same queries run on `data/babyname.db`. It also checks the error answers, the caching headers, that the page arrives compressed and unpacks to `web/index.html`, that the icon arrives unchanged, that the stylesheet arrives compressed and unpacks to `web/bootstrap.min.css`, that the database file cannot be fetched by address, pages requested by position, including the last page of the whole table, that a request without `limit` gets 50 rows, every combination of 25 or 200 rows per page with no filter, male and female on two ranges, invalid values for both, and sorted pages: three ranges by every column in both directions, and the whole table, each compared with the same sort done by SQLite on the PC. It makes 86 checks.
 
-**`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display (its format, that it counts on by itself, and the conversion into days, hours, minutes and seconds), that the Bootstrap stylesheet is applied, the light and dark theme (Auto following a system setting the browser is told to pretend, both fixed choices, and a choice surviving a reload), that the crash notice matches what the board reports, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, the first and last buttons, the page numbers and both pagers, sorting the whole search by a column in both directions and across pages and searches, searching from both forms without a reload, an empty result, and the back button. It makes 73 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
+**`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display (its format, that it counts on by itself, and the conversion into days, hours, minutes and seconds), that the Bootstrap stylesheet is applied, the light and dark theme (Auto following a system setting the browser is told to pretend, both fixed choices, and a choice surviving a reload), that the crash notice matches what the board reports, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, the first and last buttons, the page numbers and both pagers, sorting the whole search by a column in both directions and across pages and searches, searching from both forms without a reload, an empty result, the back button, and the rows per page with the primary sex filter, including that the page opens at 50 rows again after a reload. It makes 74 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
 
 Both passed in full against the firmware described here.
 

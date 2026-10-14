@@ -5,7 +5,7 @@
 <meta name='viewport' content='width=device-width, initial-scale=1'>
 <title>ESP32 Sqlite DB Demo</title>
 <link rel='icon' href='/favicon.ico'>
-<link rel='stylesheet' href='/bootstrap.min.css?v=5.3.8'>
+<link rel='stylesheet' href='/bootstrap.min.css?v=5.3.8-1'>
 <style>
 .bi { vertical-align: -0.125em; }
 #head th { cursor: pointer; --bs-table-bg: var(--bs-primary-bg-subtle); --bs-table-color: var(--bs-primary-text-emphasis); }
@@ -95,7 +95,7 @@ var PAGES_AROUND = 2;
 var query = null;
 var searchId = 0;
 var cursors = [null], starts = [0], page = 0;
-var perPage = storedPerPage();
+var perPage = 50;
 var sexFilter = '';
 var total = null;
 var pageRows = [], pageMore = false, pageError = '', pageLoaded = false;
@@ -132,12 +132,6 @@ function readAddress() {
   if (address.has('prefix')) return { prefix: address.get('prefix') };
   if (address.has('from') || address.has('to')) return { from: address.get('from') || '', to: address.get('to') || '' };
   return null;
-}
-
-function storedPerPage() {
-  var stored = 0;
-  try { stored = Number(localStorage.getItem('perPage')); } catch (error) {}
-  return [10, 25, 50, 100, 200].indexOf(stored) >= 0 ? stored : 50;
 }
 
 function requestParams() {
@@ -354,7 +348,6 @@ PER_PAGE.forEach(function (id) {
   element(id).onchange = function () {
     perPage = Number(element(id).value);
     PER_PAGE.forEach(function (other) { element(other).value = perPage; });
-    try { localStorage.setItem('perPage', perPage); } catch (error) {}
     if (query) startSearch(query);
   };
 });

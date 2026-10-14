@@ -187,7 +187,7 @@ def main():
     low, high = "S", "T"
     want = [list(row) for row in database.execute(RANGE_SQL, (low, high))]
     for offset in (0, 200, len(want) - len(want) % 200, len(want), len(want) + 500):
-        query = urllib.parse.urlencode({"from": low, "to": high, "offset": offset})
+        query = urllib.parse.urlencode({"from": low, "to": high, "offset": offset, "limit": 200})
         status, _, body, ms = request(base, "/api/names?" + query)
         data = json.loads(body)
         expected = want[offset:offset + 200]
@@ -198,7 +198,7 @@ def main():
     # the most expensive request of its kind, so its time is worth seeing.
     everything = database.execute("Select count(*) from gendered_names").fetchone()[0]
     offset = (everything - 1) // 200 * 200
-    status, _, body, ms = request(base, "/api/names?" + urllib.parse.urlencode({"prefix": "", "offset": offset}))
+    status, _, body, ms = request(base, "/api/names?" + urllib.parse.urlencode({"prefix": "", "offset": offset, "limit": 200}))
     data = json.loads(body)
     check(status == 200 and len(data.get("rows", [])) == everything - offset and data.get("more") is False,
           "the last page of the whole table (position %d): %d rows in %.0f ms" % (offset, len(data.get("rows", [])), ms))
@@ -228,6 +228,13 @@ def main():
     status, _, body, ms = request(base, "/api/names?" + urllib.parse.urlencode({"prefix": "", "sex": "f", "sort": 3, "desc": 1, "limit": 50, "offset": 100}))
     check(json.loads(body).get("rows") == want[100:150], "the whole table, female only (sex=f), sorted by total, 50 rows from position 100, %.0f ms" % ms)
 
+    # Without "limit" the board sends 50 rows (DB_DEFAULT_ROWS), the same
+    # number the page starts with.
+    want = [list(row) for row in database.execute(RANGE_SQL, ("S", "T"))]
+    status, _, body, _ = request(base, "/api/names?" + urllib.parse.urlencode({"from": "S", "to": "T"}))
+    data = json.loads(body)
+    check(status == 200 and data.get("rows") == want[:50] and data.get("more") is True, "without limit: %d rows (default 50)" % len(data.get("rows", [])))
+
     for name, value in (("sex", "X"), ("sex", "male"), ("limit", "0"), ("limit", "201"), ("limit", "ten")):
         status, _, body, _ = request(base, "/api/names?" + urllib.parse.urlencode({"from": "Bob", "to": "Bobby", name: value}))
         check(status == 400 and "error" in json.loads(body), "%s=%r is answered 400" % (name, value))
@@ -250,7 +257,7 @@ def main():
                                         "order by %s%s, name%s, year%s, state%s" % (columns[column], direction, direction, direction, direction))
                 want = [list(row) for row in database.execute(sql, (low, high))]
                 for offset in sorted({0, last}):
-                    params = {"from": low, "to": high, "sort": column, "offset": offset}
+                    params = {"from": low, "to": high, "sort": column, "offset": offset, "limit": 200}
                     if descending:
                         params["desc"] = 1
                     status, _, body, ms = request(base, "/api/names?" + urllib.parse.urlencode(params))
@@ -267,7 +274,7 @@ def main():
     everything_sql = RANGE_SQL.replace("where name between ? and ? ", "").replace("order by name, year, state", "order by total_babies desc, name desc, year desc, state desc")
     want = [list(row) for row in database.execute(everything_sql)]
     for offset in (0, len(want) - 100):
-        status, _, body, ms = request(base, "/api/names?" + urllib.parse.urlencode({"prefix": "", "sort": 3, "desc": 1, "offset": offset}))
+        status, _, body, ms = request(base, "/api/names?" + urllib.parse.urlencode({"prefix": "", "sort": 3, "desc": 1, "offset": offset, "limit": 200}))
         data = json.loads(body)
         check(status == 200 and data.get("rows") == want[offset:offset + 200] and data.get("more") is (offset + 200 < len(want)),
               "the whole table by total, largest first, from position %d: %d rows in %.0f ms" % (offset, len(data.get("rows", [])), ms))
@@ -334,7 +341,7 @@ def main():
     # The Bootstrap stylesheet. The board sends the compressed file as it is
     # stored, so the body must unpack to exactly web/bootstrap.min.css, and
     # the headers must tell the browser that it is compressed CSS.
-    status, headers, body, ms = request(base, "/bootstrap.min.css?v=5.3.8")
+    status, headers, body, ms = request(base, "/bootstrap.min.css?v=5.3.8-1")
     with open(os.path.join(PROJECT, "web", "bootstrap.min.css"), "rb") as file:
         source = file.read()
     check(status == 200 and headers.get("Content-Encoding") == "gzip" and headers.get("Content-Type", "").startswith("text/css"),

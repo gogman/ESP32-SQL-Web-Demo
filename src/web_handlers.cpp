@@ -274,8 +274,8 @@ static const char *dataCacheControl()
  *   desc                 Optional, with sort. "1" sorts largest first.
  *   sex                  Optional. "M" or "F" keeps only rows with that
  *                        primary sex; left out or empty, all rows.
- *   limit                Optional. Rows per page, 1 to DB_PAGE_ROWS; that
- *                        maximum is also the default.
+ *   limit                Optional. Rows per page, 1 to DB_PAGE_ROWS;
+ *                        DB_DEFAULT_ROWS when left out.
  *   v                    Optional. The database version from /api/status.
  *                        Its value is not examined; its presence marks the
  *                        response as safe to cache.
@@ -308,7 +308,7 @@ static void handleNamesApi()
    * Rows per page. toInt() gives 0 for anything that is not a number,
    * which the range check then refuses.
    */
-  const int limit = server->hasArg("limit") ? server->arg("limit").toInt() : DB_PAGE_ROWS;
+  const int limit = server->hasArg("limit") ? server->arg("limit").toInt() : DB_DEFAULT_ROWS;
 
   if (limit < 1 || limit > DB_PAGE_ROWS)
   {
@@ -543,7 +543,7 @@ static void handleCss()
 
   /*
    * The page asks for the stylesheet with its version in the address
-   * (?v=5.3.8), so a different version has a different address and this
+   * (?v=5.3.8-1), so a different version has a different address and this
    * answer can be kept by the browser for a year without asking again.
    *
    * streamFile() sends the size and then the content in blocks. Because

@@ -101,13 +101,18 @@ static const char DB_PATH[] = "/littlefs" DB_FILE;
 static const int DB_CACHE_KIB = 1024;
 
 /*
- * The most rows /api/names returns per request, and the number it returns
- * when the request does not say ("limit"). The page asks for fewer, 50 by
- * default, and lets the user choose up to this many. Larger pages mean
- * fewer requests but a longer wait for each one; 200 rows take roughly a
- * tenth of a second.
+ * The most rows /api/names returns per request ("limit"). The page lets the
+ * user choose up to this many. Larger pages mean fewer requests but a longer
+ * wait for each one; 200 rows take roughly a tenth of a second.
  */
 static const int DB_PAGE_ROWS = 200;
+
+/*
+ * The number of rows /api/names returns when the request does not say
+ * ("limit"). The page starts at the same number, 50, the "selected" entry of
+ * its "Rows per page" lists, so a change here must be made there as well.
+ */
+static const int DB_DEFAULT_ROWS = 50;
 
 /* ------------------------------------------------------------------ */
 /* Web addresses                                                      */
