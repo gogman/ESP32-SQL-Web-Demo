@@ -3,7 +3,7 @@
 Usage (from the project folder):
     python tools/test_page.py [http://address-of-the-board] [path-to-browser]
 
-The default address is http://esp32.local. Passing the board's IP address instead
+The default address is http://esp32-sql.local. Passing the board's IP address instead
 avoids a name lookup of about a second on Windows for every page that is opened.
 
 tools/test_api.py checks the addresses the page calls. This script checks the page
@@ -345,7 +345,7 @@ def wait_status(browser, text):
 
 
 def main():
-    base = (sys.argv[1] if len(sys.argv) > 1 else "http://esp32.local").rstrip("/")
+    base = (sys.argv[1] if len(sys.argv) > 1 else "http://esp32-sql.local").rstrip("/")
     executable = sys.argv[2] if len(sys.argv) > 2 else next((path for path in BROWSERS if os.path.exists(path)), None)
     if not executable:
         sys.exit("No browser found. Pass the path to msedge.exe or chrome.exe as the second argument.")

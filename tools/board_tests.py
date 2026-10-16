@@ -10,7 +10,7 @@ The board must already be running the firmware to be tested: nothing here
 builds or uploads. Use tools/run_tests.py, or the VS Code task, for that.
 
 The board's address comes from the environment variable BOARD_URL, default
-http://esp32.local. In VS Code it can be set in a file named .env in the
+http://esp32-sql.local. In VS Code it can be set in a file named .env in the
 project folder, for example:
 
     BOARD_URL=http://172.16.100.185
@@ -39,14 +39,14 @@ def board():
     """
     The board's status and the address to test it at.
 
-    A name such as esp32.local is looked up once, here: the tests then use
+    A name such as esp32-sql.local is looked up once, here: the tests then use
     the IP address the board reports, as tools/run_tests.py does.
     """
-    base = os.environ.get("BOARD_URL", "http://esp32.local").rstrip("/")
+    base = os.environ.get("BOARD_URL", "http://esp32-sql.local").rstrip("/")
     if "://" not in base:
         base = "http://" + base
 
-    # A few tries: looking up a name such as esp32.local fails now and then.
+    # A few tries: looking up a name such as esp32-sql.local fails now and then.
     status = None
     for attempt in range(3):
         status = board_status(base)
@@ -95,3 +95,8 @@ def test_addresses(board):
 def test_page_in_browser(board):
     """tools/test_page.py: the page in a real browser."""
     run_script("test_page.py", board[0])
+
+
+def test_setup_page(board):
+    """tools/test_setup.py: the setup page and the settings, including a save and two restarts."""
+    run_script("test_setup.py", board[0])

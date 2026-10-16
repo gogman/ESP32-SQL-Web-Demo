@@ -7,14 +7,19 @@
  * reads the request from the server object and sends the response through
  * it.
  *
- * All addresses accept GET requests only.
+ * All addresses accept GET requests only, except the settings interface,
+ * which is also written to with POST.
  */
 
 #include "web_handlers.h"
+#include <limits.h>
+#include <stdarg.h>
 #include <WiFi.h>
 #include "LittleFS.h"
 #include "esp_core_dump.h"
 #include "Definitions.h"
+#include "network.h"
+#include "settings.h"
 
 /*
  * The database hands its output over in pieces of up to db_mgr::CHUNK_SIZE
@@ -39,6 +44,10 @@ static_assert(db_mgr::CHUNK_SIZE <= ChunkServer::MAX_CHUNK_SIZE, "a database chu
 extern const char INDEX_HTML_START[] asm("_binary_web_index_html_gz_start");
 extern const char INDEX_HTML_END[] asm("_binary_web_index_html_gz_end");
 
+/* The setup page, web/admin.html, built into the firmware the same way. */
+extern const char SETUP_HTML_START[] asm("_binary_web_admin_html_gz_start");
+extern const char SETUP_HTML_END[] asm("_binary_web_admin_html_gz_end");
+
 /* The page's icon, web/favicon.ico, built into the firmware the same way. */
 extern const char FAVICON_START[] asm("_binary_web_favicon_ico_start");
 extern const char FAVICON_END[] asm("_binary_web_favicon_ico_end");
@@ -53,16 +62,26 @@ extern const char FAVICON_END[] asm("_binary_web_favicon_ico_end");
 static const char BUILD_TIME[] = __DATE__ " " __TIME__;
 
 /*
- * The "ETag" of the application page: a version label defined by HTTP.
+ * A page built into the firmware: where its compressed copy starts and ends,
+ * and its "ETag", a version label defined by HTTP.
  *
- * The browser remembers the page together with this label and, on the next
+ * The browser remembers a page together with this label and, on the next
  * visit, asks "has it changed from this label?". For that to work the label
  * must change exactly when the page does. It is therefore worked out from
- * the page itself, in registerWebHandlers(): the page's length and a
- * checksum of its content, in double quotes as the ETag format requires,
- * for example "10b8-5f3a9c21".
+ * the page itself, in makeEtag(): the page's length and a checksum of its
+ * content, in double quotes as the ETag format requires, for example
+ * "10b8-5f3a9c21".
  */
-static char pageEtag[24] = "";
+struct EmbeddedPage
+{
+  const char *start;
+  const char *end;
+  char etag[24];
+};
+
+/* The application page and the setup page. */
+static EmbeddedPage applicationPage = {INDEX_HTML_START, INDEX_HTML_END, ""};
+static EmbeddedPage setupPage = {SETUP_HTML_START, SETUP_HTML_END, ""};
 
 /*
  * The largest character that exists, U+10FFFF, encoded in UTF-8.
@@ -162,24 +181,43 @@ static void sendJsonError(int code, const char *message)
 }
 
 /*
- * GET / and GET /query_db - the application page.
+ * Works out a page's ETag from its content. The checksum is FNV-1a, a simple
+ * and well-known hash: start from a fixed value, and for every byte, combine
+ * it in with exclusive-or and multiply by a fixed prime. Any change to the
+ * page changes the result. A page is a few kilobytes, so this takes a
+ * fraction of a millisecond, once, at startup.
+ */
+static void makeEtag(EmbeddedPage &page)
+{
+  const size_t length = page.end - page.start;
+  uint32_t checksum = 2166136261u;
+
+  for (size_t i = 0; i < length; i++)
+  {
+    checksum ^= (uint8_t)page.start[i];
+    checksum *= 16777619u;
+  }
+
+  snprintf(page.etag, sizeof(page.etag), "\"%x-%08x\"", (unsigned)length, (unsigned)checksum);
+}
+
+/*
+ * Sends a page built into the firmware.
  *
- * The page is static, so the aim is to send it as rarely as possible.
+ * A page is static, so the aim is to send it as rarely as possible.
  * "Cache-Control: no-cache" does not forbid caching; it tells the browser
  * to keep its copy but to check with the server before each use. The check
  * is the If-None-Match header carrying the ETag the browser was given. If
  * that still equals the label of the page in this firmware, the answer is a
  * bodiless "304 Not Modified" and the browser uses its copy.
  */
-static void handleIndex()
+static void sendPage(const EmbeddedPage &page)
 {
-  ActivityLed led;
-
   /* Both headers go out with either answer, the full page and the 304. */
-  server->sendHeader("ETag", pageEtag);
+  server->sendHeader("ETag", page.etag);
   server->sendHeader("Cache-Control", "no-cache");
 
-  if (server->header("If-None-Match") == pageEtag)
+  if (server->header("If-None-Match") == page.etag)
   {
     server->send(304, "text/html", "");
     return;
@@ -194,7 +232,33 @@ static void handleIndex()
    * was computed over.
    */
   server->sendHeader("Content-Encoding", "gzip");
-  server->send_P(200, "text/html", INDEX_HTML_START, INDEX_HTML_END - INDEX_HTML_START);
+  server->send_P(200, "text/html", page.start, page.end - page.start);
+}
+
+/* GET / and GET /query_db - the application page. */
+static void handleIndex()
+{
+  ActivityLed led;
+  sendPage(applicationPage);
+}
+
+/* GET /admin/setup/ - the setup page, where the network settings are changed. */
+static void handleSetupPage()
+{
+  ActivityLed led;
+  sendPage(setupPage);
+}
+
+/*
+ * GET /admin/setup - the setup page's address without the final slash. It
+ * is sent on to the address with the slash, so there is only one address
+ * for the page.
+ */
+static void handleSetupRedirect()
+{
+  ActivityLed led;
+  server->sendHeader("Location", SETUP_PAGE_URL);
+  server->send(301, "text/plain", "");
 }
 
 /*
@@ -521,6 +585,325 @@ static void handleStatusApi()
 }
 
 /*
+ * Writes text into a buffer as a JSON string, with its double quotes.
+ *
+ * Unlike copyJsonSafe(), nothing is lost: a double quote and a backslash are
+ * written with a backslash before them, and a control character as \u00XX,
+ * as JSON defines. Network names may contain any of these, and the setup
+ * page must get them back exactly. Every other byte, including the bytes of
+ * UTF-8 characters, is copied as it is. Returns false if the buffer was too
+ * small.
+ */
+static bool writeJsonString(char *&out, const char *end, const char *text)
+{
+  if (out >= end)
+    return false;
+  *out++ = '"';
+
+  for (const char *c = text; *c; c++)
+  {
+    char escaped[8];
+    const unsigned char byte = *c;
+
+    if (byte == '"' || byte == '\\')
+      snprintf(escaped, sizeof(escaped), "\\%c", byte);
+    else if (byte < 0x20)
+      snprintf(escaped, sizeof(escaped), "\\u%04x", byte);
+    else
+    {
+      escaped[0] = byte;
+      escaped[1] = '\0';
+    }
+
+    const size_t length = strlen(escaped);
+    if (out + length >= end)
+      return false;
+    memcpy(out, escaped, length);
+    out += length;
+  }
+
+  if (out + 1 >= end)
+    return false;
+  *out++ = '"';
+  *out = '\0';
+  return true;
+}
+
+/*
+ * Adds formatted text to the answer being built in handleSettingsGet(),
+ * like printf(). Returns false if the buffer is full.
+ */
+static bool appendf(char *&out, const char *end, const char *format, ...)
+{
+  if (out >= end)
+    return false;
+
+  va_list args;
+  va_start(args, format);
+  const int written = vsnprintf(out, end - out, format, args);
+  va_end(args);
+
+  if (written < 0 || out + written >= end)
+    return false;
+
+  out += written;
+  return true;
+}
+
+/* Adds a list of choices, [{"value":..,"label":".."},...], under the given name. */
+static bool appendChoices(char *&out, const char *end, const char *name, const ValueOption *options, size_t count)
+{
+  bool ok = appendf(out, end, ",\"%s\":[", name);
+
+  for (size_t i = 0; i < count && ok; i++)
+    ok = appendf(out, end, "%s{\"value\":%d,\"label\":\"%s\"}", i ? "," : "", options[i].value, options[i].label);
+
+  return ok && appendf(out, end, "]");
+}
+
+/*
+ * GET /api/settings - the saved settings, and the choices the page offers,
+ * as JSON:
+ *
+ * {"hostname":"ESP32-SQL","network_name":"esp32-sql","mode":"sta",
+ *  "sta_ssid":"home","sta_password_set":true,"ap_ssid":"ESP32 SQL 3FA9C1",
+ *  "wifi_channel":1,"max_clients":4,"dns_interval":10,"country":"US",
+ *  "tx_power":78,
+ *  "max_clients_limit":10,
+ *  "countries":[{"code":"US","name":"United States","channels":11},...],
+ *  "tx_powers":[{"value":78,"label":"19.5 dBm (maximum)"},...],
+ *  "dns_intervals":[{"value":0,"label":"Every pass"},...]}
+ *
+ * mode is "sta" (join the WiFi network) or "ap" (access point only).
+ * network_name is the host name as the network uses it; the board answers
+ * to <network_name>.local. The WiFi password itself is never sent, only
+ * whether one is saved: the page leaves the password fields empty, and
+ * empty fields keep the saved password. The lists come from the tables in
+ * settings.cpp, so the page offers exactly what the board accepts.
+ */
+static void handleSettingsGet()
+{
+  ActivityLed led;
+
+  char name[HOSTNAME_MAX + 1];
+  networkName(settings.hostname, name, sizeof(name));
+
+  /*
+   * About 3 KB with the lists (45 countries); the network names may grow up to six times
+   * when every byte needs escaping (\u00XX). static: too large for the
+   * stack, and requests are answered one at a time.
+   */
+  static char body[4096];
+  char *out = body;
+  const char *end = body + sizeof(body);
+
+  bool ok = appendf(out, end, "{\"hostname\":\"%s\",\"network_name\":\"%s\",\"mode\":\"%s\",\"sta_ssid\":",
+                    settings.hostname, name, settings.accessPointMode ? "ap" : "sta");
+  ok = ok && writeJsonString(out, end, settings.staSsid);
+  ok = ok && appendf(out, end, ",\"sta_password_set\":%s,\"ap_ssid\":", settings.staPassword[0] ? "true" : "false");
+  ok = ok && writeJsonString(out, end, settings.apSsid);
+  ok = ok && appendf(out, end, ",\"wifi_channel\":%u,\"max_clients\":%u,\"dns_interval\":%u,\"country\":\"%s\",\"tx_power\":%d",
+                     settings.channel, settings.maxClients, settings.dnsIntervalMs, settings.country, settings.txPower);
+  ok = ok && appendf(out, end, ",\"max_clients_limit\":%d,\"countries\":[", MAX_CLIENTS_LIMIT);
+
+  for (size_t i = 0; i < kWifiCountryCount && ok; i++)
+    ok = appendf(out, end, "%s{\"code\":\"%s\",\"name\":\"%s\",\"channels\":%u}", i ? "," : "",
+                 kWifiCountries[i].code, kWifiCountries[i].name, kWifiCountries[i].channels);
+
+  ok = ok && appendf(out, end, "]");
+  ok = ok && appendf(out, end, ",\"tx_powers\":[");
+
+  for (size_t i = 0; i < kTxPowerLevelCount && ok; i++)
+    ok = appendf(out, end, "%s{\"value\":%d,\"label\":\"%s\"}", i ? "," : "", kTxPowerLevels[i].value, kTxPowerLevels[i].label);
+
+  ok = ok && appendf(out, end, "]");
+  ok = ok && appendChoices(out, end, "dns_intervals", DNS_INTERVALS, DNS_INTERVAL_COUNT);
+  ok = ok && appendf(out, end, "}");
+
+  if (!ok)
+  {
+    sendJsonError(500, "The settings do not fit in the answer");
+    return;
+  }
+
+  /* Settings change; the page must always show the saved ones. */
+  server->sendHeader("Cache-Control", "no-store");
+  server->send(200, "application/json", body);
+}
+
+/*
+ * Sends a 400 answer about one field of the settings:
+ * {"error":"<message>","field":"<field>"}. The page marks that field.
+ */
+static void sendSettingsError(const char *message, const char *field)
+{
+  char body[240];
+  snprintf(body, sizeof(body), "{\"error\":\"%s\",\"field\":\"%s\"}", message, field);
+  server->sendHeader("Cache-Control", "no-store");
+  server->send(400, "application/json", body);
+}
+
+/*
+ * Copies one form field into a settings array. Returns false, after
+ * answering with a 400 error, if the value is longer than the array holds;
+ * cutting it short silently would save something the user did not type.
+ */
+static bool readField(const char *field, char *out, size_t size, const char *tooLong)
+{
+  const String value = server->arg(field);
+
+  if (value.length() >= size)
+  {
+    sendSettingsError(tooLong, field);
+    return false;
+  }
+
+  strlcpy(out, value.c_str(), size);
+  return true;
+}
+
+/* What readNumber() gives for a field that is not a whole number. */
+static const long NOT_A_NUMBER = LONG_MIN;
+
+/*
+ * Reads one form field as a whole number: digits, with a minus sign in front
+ * for a negative one (the weakest transmit power is -4). Anything else
+ * (empty, "12abc", "1.5", too long) gives NOT_A_NUMBER.
+ */
+static long readNumber(const char *field)
+{
+  const String value = server->arg(field);
+  const size_t first = value.startsWith("-") ? 1 : 0;
+
+  if (value.length() <= first || value.length() > 5)
+    return NOT_A_NUMBER;
+
+  for (size_t i = first; i < value.length(); i++)
+  {
+    if (!isdigit((unsigned char)value[i]))
+      return NOT_A_NUMBER;
+  }
+
+  return value.toInt();
+}
+
+/*
+ * POST /api/settings - saves new settings and restarts the board to apply
+ * them.
+ *
+ * The body is an ordinary form (application/x-www-form-urlencoded), the
+ * fields of the setup page:
+ *
+ *   hostname          the host name
+ *   mode              "sta" (join the WiFi network) or "ap" (access point only)
+ *   sta_ssid          the WiFi network
+ *   sta_pass,         its password, typed twice; both empty keeps the saved
+ *   sta_pass_confirm  password
+ *   sta_open          "1" for an open network: the saved password is removed
+ *   ap_ssid           the access point's name
+ *   wifi_channel      the access point's channel
+ *   max_clients       how many devices may use the access point at once
+ *   dns_interval      how often the captive DNS server answers, in ms
+ *   country           a code from the country list
+ *   tx_power          a value from the transmit power list
+ *
+ * Invalid settings are answered 400 with {"error":...,"field":...} and
+ * nothing is saved. Valid ones are saved, answered with
+ * {"saved":true,"restarting":true,"network_name":"..."}, and the board
+ * restarts RESTART_DELAY_MS later; see restartSoon().
+ */
+static void handleSettingsPost()
+{
+  ActivityLed led;
+
+  Settings candidate = settings;
+  const String mode = server->arg("mode");
+
+  if (mode != "sta" && mode != "ap")
+  {
+    sendSettingsError("Choose a network mode", "mode");
+    return;
+  }
+
+  candidate.accessPointMode = mode == "ap";
+
+  if (!readField("hostname", candidate.hostname, sizeof(candidate.hostname), "The host name must be 1 to 32 letters, digits and hyphens") ||
+      !readField("sta_ssid", candidate.staSsid, sizeof(candidate.staSsid), "The WiFi network name must be 1 to 32 bytes long") ||
+      !readField("ap_ssid", candidate.apSsid, sizeof(candidate.apSsid), "The access point name must be 1 to 32 bytes long") ||
+      !readField("country", candidate.country, sizeof(candidate.country), "Choose a country from the list"))
+    return;
+
+  /*
+   * The password. An open network has none, so ticking "Open network"
+   * removes the saved one. Otherwise a password typed twice replaces it, and
+   * empty fields keep it; but if no password is saved, that would quietly
+   * turn the network into an open one, so a password is asked for instead.
+   */
+  const String password = server->arg("sta_pass");
+
+  if (server->arg("sta_open") == "1")
+    candidate.staPassword[0] = '\0';
+  else if (password.length() > 0)
+  {
+    if (password != server->arg("sta_pass_confirm"))
+    {
+      sendSettingsError("The passwords don't match", "sta_pass_confirm");
+      return;
+    }
+
+    if (!readField("sta_pass", candidate.staPassword, sizeof(candidate.staPassword), "The WiFi password must be 8 to 63 characters long"))
+      return;
+  }
+  else if (!candidate.accessPointMode && candidate.staPassword[0] == '\0')
+  {
+    sendSettingsError("Enter the network's password, or tick Open network", "sta_pass");
+    return;
+  }
+
+  /*
+   * The numbers. Each is checked in checkSettings(); one that is not a
+   * number, or too large for its variable, is first turned into a value
+   * that check refuses (0, or 65535 for the DNS interval), so it cannot wrap
+   * around into a valid one.
+   */
+  const long channel = readNumber("wifi_channel");
+  const long maxClients = readNumber("max_clients");
+  const long dnsInterval = readNumber("dns_interval");
+  const long txPower = readNumber("tx_power");
+
+  candidate.channel = channel >= 0 && channel <= 255 ? channel : 0;
+  candidate.maxClients = maxClients >= 0 && maxClients <= 255 ? maxClients : 0;
+  candidate.dnsIntervalMs = dnsInterval >= 0 && dnsInterval < 65535 ? dnsInterval : 65535;
+  candidate.txPower = txPower >= -128 && txPower <= 127 ? txPower : 0;
+
+  const char *field;
+  const char *problem = checkSettings(candidate, field);
+
+  if (problem)
+  {
+    sendSettingsError(problem, field);
+    return;
+  }
+
+  if (!saveSettings(candidate))
+  {
+    sendJsonError(500, "The settings could not be saved");
+    return;
+  }
+
+  char name[HOSTNAME_MAX + 1];
+  networkName(candidate.hostname, name, sizeof(name));
+
+  char body[120];
+  snprintf(body, sizeof(body), "{\"saved\":true,\"restarting\":true,\"network_name\":\"%s\"}", name);
+  server->sendHeader("Cache-Control", "no-store");
+  server->send(200, "application/json", body);
+
+  LOG_PRINTLN("New settings saved");
+  restartSoon();
+}
+
+/*
  * GET /bootstrap.min.css - the Bootstrap stylesheet.
  *
  * The file on the filesystem is gzip-compressed (about 31 KB instead of
@@ -575,10 +958,17 @@ static void handleFavicon()
  *
  * That covers two cases:
  *
- * 1. A method other than GET. Every address is registered for GET only, so
- *    a POST to an existing address also lands here. It is answered with
- *    "405 Method Not Allowed" and an Allow header naming what is accepted.
- * 2. Everything else, which is a plain "404 Not Found".
+ * 1. A method other than GET. Every address except /api/settings is
+ *    registered for GET only, so a POST to one of them also lands here. It is
+ *    answered with "405 Method Not Allowed" and an Allow header naming what
+ *    is accepted.
+ * 2. While the access point runs, a request addressed to another site. The
+ *    captive DNS server (network.cpp) sends every name to the board, so this
+ *    is typically a phone checking for internet access, for example
+ *    http://connectivitycheck.gstatic.com/generate_204. It is sent on to the
+ *    application's page, which makes the phone show its "sign in to network"
+ *    prompt with the page in it.
+ * 3. Everything else, which is a plain "404 Not Found".
  */
 static void handleOther()
 {
@@ -589,6 +979,20 @@ static void handleOther()
     server->sendHeader("Allow", "GET");
     server->send(405, "text/plain", "Method Not Allowed\n");
     return;
+  }
+
+  if (WiFi.getMode() & WIFI_AP)
+  {
+    const String apAddress = WiFi.softAPIP().toString();
+    const String host = server->hostHeader();
+
+    if (host != apAddress && !host.endsWith(".local"))
+    {
+      server->sendHeader("Location", "http://" + apAddress + "/");
+      server->sendHeader("Cache-Control", "no-store");
+      server->send(302, "text/plain", "");
+      return;
+    }
   }
 
   const String uri = server->uri();
@@ -617,23 +1021,9 @@ void registerWebHandlers(ChunkServer &webServer, db_mgr &db, int cacheKiB, bool 
   databaseCacheKiB = cacheKiB;
   filesystemMounted = fsMounted;
 
-  /*
-   * Work out the page's ETag from its content. The checksum is FNV-1a, a
-   * simple and well-known hash: start from a fixed value, and for every
-   * byte, combine it in with exclusive-or and multiply by a fixed prime.
-   * Any change to the page changes the result. The page is a few kilobytes,
-   * so this takes a fraction of a millisecond, once, at startup.
-   */
-  const size_t pageLength = INDEX_HTML_END - INDEX_HTML_START;
-  uint32_t checksum = 2166136261u;
-
-  for (size_t i = 0; i < pageLength; i++)
-  {
-    checksum ^= (uint8_t)INDEX_HTML_START[i];
-    checksum *= 16777619u;
-  }
-
-  snprintf(pageEtag, sizeof(pageEtag), "\"%x-%08x\"", (unsigned)pageLength, (unsigned)checksum);
+  /* The pages' version labels; see EmbeddedPage. */
+  makeEtag(applicationPage);
+  makeEtag(setupPage);
 
   /*
    * Work out the database version text from the file's size and its last
@@ -673,8 +1063,8 @@ void registerWebHandlers(ChunkServer &webServer, db_mgr &db, int cacheKiB, bool 
   /*
    * The web server only keeps the request headers it has been told to
    * collect; all others are discarded while the request is read. Without
-   * this, server->header("If-None-Match") in handleIndex() would always be
-   * empty and the page would be sent in full every time.
+   * this, server->header("If-None-Match") in sendPage() would always be
+   * empty and the pages would be sent in full every time.
    */
   static const char *HEADERS[] = {"If-None-Match"};
   webServer.collectHeaders(HEADERS, 1);
@@ -691,6 +1081,15 @@ void registerWebHandlers(ChunkServer &webServer, db_mgr &db, int cacheKiB, bool 
   webServer.on(NAMES_API_URL, HTTP_GET, handleNamesApi);
   webServer.on(COUNT_API_URL, HTTP_GET, handleCountApi);
   webServer.on(STATUS_API_URL, HTTP_GET, handleStatusApi);
+
+  /*
+   * The setup page and its interface. The address without the final slash
+   * is sent on to the one with it.
+   */
+  webServer.on(SETUP_PAGE_URL, HTTP_GET, handleSetupPage);
+  webServer.on("/admin/setup", HTTP_GET, handleSetupRedirect);
+  webServer.on(SETTINGS_API_URL, HTTP_GET, handleSettingsGet);
+  webServer.on(SETTINGS_API_URL, HTTP_POST, handleSettingsPost);
 
   /* The stylesheet the page links to, and the page's icon. */
   webServer.on(CSS_URL, HTTP_GET, handleCss);

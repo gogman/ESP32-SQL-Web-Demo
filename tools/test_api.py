@@ -3,7 +3,7 @@
 Usage (from the project folder):
     python tools/test_api.py [http://address-of-the-board]
 
-The default address is http://esp32.local.
+The default address is http://esp32-sql.local.
 
 For a set of name ranges, every page is fetched from /api/names and the rows are
 compared with what the same query gives on data/babyname.db. The script also checks
@@ -15,7 +15,7 @@ The page itself, as it behaves in a browser, is checked by tools/test_page.py.
 The exit code is 0 when every check passed and 1 otherwise.
 
 Note on the timings: with the default address, Windows looks up the name
-"esp32.local" again for every request, which adds about a second each time. Pass
+"esp32-sql.local" again for every request, which adds about a second each time. Pass
 the board's IP address instead to see how fast the board itself answers.
 """
 
@@ -69,7 +69,7 @@ def request(base, path, headers=None):
     call = urllib.request.Request(base + path, headers=headers or {})
     start = time.perf_counter()
 
-    # Looking up a name such as esp32.local fails now and then on Windows. A
+    # Looking up a name such as esp32-sql.local fails now and then on Windows. A
     # request that could not reach the board at all is tried again, up to
     # three times in all; the time reported then includes the failed tries.
     for attempt in range(3):
@@ -137,7 +137,7 @@ def fetch_count(base, query):
 def main():
     # The board's address without a trailing slash, since every path used below
     # starts with one.
-    base = (sys.argv[1] if len(sys.argv) > 1 else "http://esp32.local").rstrip("/")
+    base = (sys.argv[1] if len(sys.argv) > 1 else "http://esp32-sql.local").rstrip("/")
 
     # The database file on the PC, opened read-only. It must be the same file
     # that was uploaded to the board, or the comparisons below mean nothing.

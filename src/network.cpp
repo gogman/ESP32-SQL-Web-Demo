@@ -1,16 +1,21 @@
 /*
- * Network setup: joining the WiFi network, the fallback access point that
- * keeps the board reachable when the network is not, and the mDNS name.
+ * Network setup: joining the WiFi network, the access point (chosen on the
+ * setup page, or as a fallback that keeps the board reachable when the
+ * network is not) with its captive DNS server, and the mDNS name.
  *
- * The network name and passwords come from Secrets.h; timeouts, the access
- * point name and the optional fixed address come from Definitions.h.
+ * Everything the setup page sets comes from the saved settings (settings.h);
+ * the access point password from Secrets.h; timeouts and the optional fixed
+ * address from Definitions.h.
  */
 
 #include "network.h"
 #include <WiFi.h>
 #include <ESPmDNS.h>
+#include <DNSServer.h>
+#include "esp_wifi.h"
 #include "Definitions.h"
 #include "Secrets.h"
+#include "settings.h"
 
 /*
  * The millis() timestamp at which the fallback access point was started.
@@ -27,6 +32,59 @@ static unsigned long accessPointSince = 0;
  * running). Like accessPointSince, a real timestamp is never stored as 0.
  */
 static unsigned long connectionLostSince = 0;
+
+/*
+ * The millis() timestamp after which the board restarts, set by
+ * restartSoon(), or 0 when no restart is due. Never 0 when set, like the
+ * timestamps above.
+ */
+static unsigned long restartAt = 0;
+
+/*
+ * The host name in the form the network uses (see networkName() in
+ * settings.h), for example "esp32-sql". Worked out once, in connectWiFi().
+ */
+static char hostName[HOSTNAME_MAX + 1] = "";
+
+/*
+ * The captive DNS server, running while the access point is. It answers
+ * every name with the board's own address, so a phone that joins the access
+ * point and checks for internet access lands on the board, and shows its
+ * "sign in to network" prompt with the application in it.
+ */
+static DNSServer dnsServer;
+static bool dnsRunning = false;
+
+/* When the DNS server last answered waiting questions, for settings.dnsIntervalMs. */
+static unsigned long dnsServedAt = 0;
+
+/*
+ * Applies the radio settings: the country, which decides the channels and
+ * power levels that are allowed, and the transmit power. Both can only be
+ * set while WiFi is running, so this is called right after WiFi.mode().
+ */
+static void applyRadioSettings()
+{
+  const WifiCountry *country = findCountry(settings.country);
+
+  /*
+   * The ESP32 country record: the code, the first channel, the number of
+   * channels and the highest power in dBm. MANUAL means "use exactly this",
+   * rather than adopting the country an access point announces.
+   */
+  wifi_country_t record = {};
+  memcpy(record.cc, settings.country, 2);
+  record.cc[2] = ' ';
+  record.schan = 1;
+  record.nchan = country ? country->channels : 11;
+  record.max_tx_power = 20;
+  record.policy = WIFI_COUNTRY_POLICY_MANUAL;
+
+  if (esp_wifi_set_country(&record) != ESP_OK)
+    LOG_PRINTLN("The country could not be set");
+
+  WiFi.setTxPower((wifi_power_t)settings.txPower);
+}
 
 /*
  * Applies the fixed IP address from Definitions.h, if one is configured.
@@ -67,9 +125,10 @@ static void applyStaticAddress()
 /*
  * Turns the board into its own WiFi access point.
  *
- * Used when the configured network cannot be joined. A phone or laptop can
- * then connect to the network named AP_SSID and reach the application at
- * the address printed below (normally 192.168.4.1).
+ * Used in access point mode, and as a fallback when the configured network
+ * cannot be joined. A phone or laptop can then connect to the network named
+ * settings.apSsid and reach the application at the address printed below
+ * (normally 192.168.4.1).
  */
 static void startAccessPoint()
 {
@@ -80,29 +139,59 @@ static void startAccessPoint()
    */
   WiFi.disconnect(true);
   WiFi.mode(WIFI_AP);
-  WiFi.softAP(AP_SSID, AP_PASSWORD);
+  applyRadioSettings();
+
+  /*
+   * The access point on the chosen channel, visible (0 = the name is
+   * broadcast), for at most settings.maxClients devices at once.
+   */
+  WiFi.softAP(settings.apSsid, AP_PASSWORD, settings.channel, 0, settings.maxClients);
 
   /* Remember when the access point came up; never 0, see accessPointSince. */
   accessPointSince = max(millis(), 1UL);
 
-  LOG_PRINT("WiFi network not reachable. Started access point ");
-  LOG_PRINT(AP_SSID);
-  LOG_PRINT(", IP address: ");
-  LOG_PRINTLN(WiFi.softAPIP());
+  /*
+   * The captive DNS server: "*" answers every name with the access point's
+   * address. NoError makes it answer questions it has no record for (other
+   * than address lookups) with an empty answer rather than an error, which
+   * some phones expect.
+   */
+  dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+  dnsRunning = dnsServer.start(53, "*", WiFi.softAPIP());
+
+  LOG_PRINTF("Started access point %s on channel %u, IP address: %s, captive DNS %s\n", settings.apSsid,
+             settings.channel, WiFi.softAPIP().toString().c_str(), dnsRunning ? "running" : "failed");
 }
 
 /*
- * Joins the WiFi network named in Secrets.h.
+ * Starts the network as the settings say.
  *
- * Waits up to WIFI_CONNECT_TIMEOUT_MS, printing a dot every half second.
- * Returns true once the network is joined. If the time runs out, the
- * fallback access point is started instead and false is returned; the board
- * is reachable in both cases.
+ * In access point mode, the access point is started and false is returned.
+ * Otherwise the board joins the WiFi network in the settings, waiting up to
+ * WIFI_CONNECT_TIMEOUT_MS and printing a dot every half second, and true is
+ * returned once it has. If the time runs out, the fallback access point is
+ * started instead and false is returned; the board is reachable in all cases.
  */
 bool connectWiFi()
 {
+  networkName(settings.hostname, hostName, sizeof(hostName));
+
+  /*
+   * The name the board gives the router when it asks for an address (DHCP),
+   * which routers show in their list of devices. It has to be set before
+   * the WiFi mode is chosen, because that is when the framework applies it.
+   */
+  WiFi.setHostname(hostName);
+
+  if (settings.accessPointMode)
+  {
+    startAccessPoint();
+    return false;
+  }
+
   /* Station mode: the board is a client of an existing network. */
   WiFi.mode(WIFI_STA);
+  applyRadioSettings();
 
   /*
    * By default the ESP32 lets its radio sleep between the access point's
@@ -114,10 +203,10 @@ bool connectWiFi()
   WiFi.setSleep(false);
 
   applyStaticAddress();
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(settings.staSsid, settings.staPassword);
 
   LOG_PRINT("Connecting to ");
-  LOG_PRINT(WIFI_SSID);
+  LOG_PRINT(settings.staSsid);
 
   const unsigned long start = millis();
 
@@ -131,6 +220,7 @@ bool connectWiFi()
     {
       /* End the line of dots, then fall back to the access point. */
       LOG_PRINTLN("");
+      LOG_PRINTLN("WiFi network not reachable");
       startAccessPoint();
       return false;
     }
@@ -146,7 +236,8 @@ bool connectWiFi()
 }
 
 /*
- * Starts the mDNS responder so the board answers to "<MDNS_HOSTNAME>.local".
+ * Starts the mDNS responder so the board answers to "<host name>.local", for
+ * example "esp32-sql.local".
  *
  * Without it the application can only be reached by its IP address. A
  * failure here is reported but otherwise ignored, because the IP address
@@ -154,7 +245,7 @@ bool connectWiFi()
  */
 void announceWebServer()
 {
-  if (!MDNS.begin(MDNS_HOSTNAME))
+  if (!MDNS.begin(hostName))
   {
     LOG_PRINTLN("MDNS responder could not be started");
     return;
@@ -165,7 +256,7 @@ void announceWebServer()
    * network for web servers will then list the board.
    */
   MDNS.addService("http", "tcp", HTTP_PORT);
-  LOG_PRINTLN("MDNS responder started");
+  LOG_PRINTF("MDNS responder started: http://%s.local\n", hostName);
 }
 
 /*
@@ -214,6 +305,10 @@ static void watchConnection()
  */
 static void handleAccessPoint()
 {
+  /* In access point mode the access point is meant to stay; there is no network to go back to. */
+  if (settings.accessPointMode)
+    return;
+
   if (millis() - accessPointSince >= AP_RETRY_MS)
   {
     if (WiFi.softAPgetStationNum() == 0)
@@ -235,11 +330,38 @@ static void handleAccessPoint()
 }
 
 /*
+ * Asks for a restart RESTART_DELAY_MS from now; handleNetwork() carries it out.
+ */
+void restartSoon()
+{
+  restartAt = max(millis() + RESTART_DELAY_MS, 1UL);
+}
+
+/*
  * Periodic network housekeeping; call it from loop(). accessPointSince is 0
  * while on the WiFi network, so it tells which of the two jobs applies.
  */
 void handleNetwork()
 {
+  /* A restart asked for by restartSoon(), once its time has come. */
+  if (restartAt != 0 && (long)(millis() - restartAt) >= 0)
+  {
+    LOG_PRINTLN("Restarting to apply the new settings");
+    ESP.restart();
+  }
+
+  /*
+   * The captive DNS server answers the questions waiting for it, every
+   * settings.dnsIntervalMs (0: on every pass). Answering more often makes
+   * pages start loading sooner on the access point, at the cost of more
+   * processor time.
+   */
+  if (dnsRunning && millis() - dnsServedAt >= settings.dnsIntervalMs)
+  {
+    dnsServer.processNextRequest();
+    dnsServedAt = millis();
+  }
+
   if (accessPointSince == 0)
     watchConnection();
   else

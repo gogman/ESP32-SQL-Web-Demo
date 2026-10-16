@@ -1,10 +1,10 @@
 """
-Builds and uploads the firmware, waits for the board, and runs both tests.
+Builds and uploads the firmware, waits for the board, and runs the tests.
 
     python tools/run_tests.py [address] [options]
 
     address        The board, for example http://172.16.100.185. The default
-                   is http://esp32.local. A name is looked up only once: the
+                   is http://esp32-sql.local. A name is looked up only once: the
                    tests then run against the IP address the board reports.
 
     --no-upload    Test the firmware already on the board.
@@ -13,6 +13,9 @@ Builds and uploads the firmware, waits for the board, and runs both tests.
     --env NAME     The PlatformIO environment to build (default Release).
     --api-only     Run only tools/test_api.py.
     --page-only    Run only tools/test_page.py.
+    --setup-only   Run only tools/test_setup.py.
+    --no-restart   Pass --no-restart to tools/test_setup.py: check the setup
+                   page without saving, so the board does not restart.
 
 The steps stop at the first failure. The exit code is 0 only when every step
 succeeded and every check passed, so the script can be used by other tools.
@@ -92,13 +95,15 @@ def wait_for_board(base, since):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Upload the firmware and run both tests against the board.")
-    parser.add_argument("address", nargs="?", default="http://esp32.local")
+    parser = argparse.ArgumentParser(description="Upload the firmware and run the tests against the board.")
+    parser.add_argument("address", nargs="?", default="http://esp32-sql.local")
     parser.add_argument("--no-upload", action="store_true")
     parser.add_argument("--uploadfs", action="store_true")
     parser.add_argument("--env", default="Release")
     parser.add_argument("--api-only", action="store_true")
     parser.add_argument("--page-only", action="store_true")
+    parser.add_argument("--setup-only", action="store_true")
+    parser.add_argument("--no-restart", action="store_true")
     options = parser.parse_args()
 
     base = options.address.rstrip("/")
@@ -135,7 +140,7 @@ def main():
         print("NOTE: a crash dump is waiting (task %s at %s); see 'Reading a crash' in docs/how-it-works.md."
               % (status.get("crash_task"), status.get("crash_pc")))
 
-    # The tests make hundreds of requests. Given a name such as esp32.local,
+    # The tests make hundreds of requests. Given a name such as esp32-sql.local,
     # each would look the name up again, which on Windows takes up to a
     # second and now and then fails. The board reports its own IP address,
     # so the name is looked up only once, here, and the tests use the address.
@@ -145,15 +150,20 @@ def main():
         base = base.replace(host, ip, 1)
         print("Testing at %s (the address %s reports for itself)" % (base, host))
 
+    # The setup test comes last: unless --no-restart is given, it restarts the
+    # board twice, and the other two expect a board that has been up a while.
+    only = options.api_only or options.page_only or options.setup_only
     tests = []
-    if not options.page_only:
-        tests.append(("Address test", "test_api.py"))
-    if not options.api_only:
-        tests.append(("Browser test", "test_page.py"))
+    if options.api_only or not only:
+        tests.append(("Address test", "test_api.py", []))
+    if options.page_only or not only:
+        tests.append(("Browser test", "test_page.py", []))
+    if options.setup_only or not only:
+        tests.append(("Setup test", "test_setup.py", ["--no-restart"] if options.no_restart else []))
 
-    for title, script in tests:
+    for title, script, extra in tests:
         step(title)
-        passed = run([sys.executable, os.path.join(PROJECT, "tools", script), base])
+        passed = run([sys.executable, os.path.join(PROJECT, "tools", script), base] + extra)
         results.append((title, passed))
 
     step("Summary")

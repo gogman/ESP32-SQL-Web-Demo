@@ -17,9 +17,13 @@
  *   /api/names    one page of names from the database, as JSON
  *   /api/count    how many names a range holds, as JSON
  *   /api/status   the state of the device, as JSON
+ *   /admin/setup/ the setup page, where the network settings are changed
+ *                 (/admin/setup without the slash is sent on to it)
+ *   /api/settings the network settings: GET reads them as JSON, POST saves
+ *                 them and restarts the board
  *   /bootstrap.min.css  the Bootstrap stylesheet, gzip-compressed
  *   /favicon.ico  the page's icon
- *   anything else the 404 answer (or 405 for a method other than GET)
+ *   anything else the 404 answer (or 405 for a method that is not accepted)
  *
  * Call it once from setup(), after the attempt to mount the filesystem (the
  * handlers read the database file's size and date from it) and before

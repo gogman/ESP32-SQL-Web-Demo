@@ -2,14 +2,14 @@
 
 SQLite_Web is firmware for an ESP32 board that serves a small web application. The application searches a SQLite database of baby names stored on the board's own flash memory and shows the results in a browser, 25 rows at a time by default.
 
-This document describes how the program is put together, how the web page works, how to build, test and diagnose it, what is known to be wrong or fragile, and what could be improved next. It reflects the state of the project on 13 October 2026.
+This document describes how the program is put together, how the web page works, how to build, test and diagnose it, what is known to be wrong or fragile, and what could be improved next. It reflects the state of the project on 16 October 2026.
 
 ## Purpose
 
 SQLite_Web is a read-only demonstration. The board never changes its data, and it is meant for a trusted network. Three choices in the design follow from that:
 
 - The database is opened read-only, so a power loss cannot damage it and answers can be cached for as long as the database version stays the same.
-- There is no login and no encryption.
+- There is no login and no encryption. This includes the setup page, where the network settings are changed; it is not password protected for now.
 - The data is replaced only by rebuilding the database on a PC and uploading the filesystem.
 
 If the board is ever asked to write data, or is exposed to people who are not trusted, all three have to be revisited.
@@ -19,11 +19,12 @@ If the board is ever asked to write data, or is exposed to people who are not tr
 | | |
 |---|---|
 | Board | Freenove ESP32-WROVER, 4 MB flash, 4 MB PSRAM |
-| Framework | Arduino core, built with PlatformIO (platform 7.1.3) |
+| Framework | Arduino core 2.0.17 (PlatformIO package 4.20017), built with PlatformIO (platform 7.1.3), from the project's own packages folder |
 | Database | SQLite through the Sqlite3Esp32 library 2.5.0 (SQLite 3.43.2) |
 | Data | One table, `gendered_names`, 25,192 rows, 835,584 bytes |
 | Filesystem | LittleFS, 2048 KB partition |
-| Address | `http://esp32.local`, or the board's IP address |
+| Address | `http://esp32-sql.local` (from the host name, which can be changed on the setup page), or the board's IP address |
+| Setup page | `/admin/setup/`: host name, network mode, WiFi network and password, access point name, channel, maximum clients, DNS interval, country and transmit power, all kept in NVS |
 | Firmware size | Release about 67% and Debug about 72% of the 1920 KB firmware partition |
 | Version control | Git repository in the project folder |
 
@@ -32,23 +33,26 @@ If the board is ever asked to write data, or is exposed to people who are not tr
 | Path | What it holds |
 |---|---|
 | `src/main.cpp` | Entry point: `setup()` and `loop()` |
-| `src/network.cpp`, `include/network.h` | WiFi, the fallback access point, the `esp32.local` name |
+| `src/settings.cpp`, `include/settings.h` | The network settings: defaults, checks, and keeping them in NVS |
+| `src/network.cpp`, `include/network.h` | WiFi, the access point, the `.local` name, the restart after saving settings |
 | `src/db_mgr.cpp`, `include/db_mgr.h` | The database: opening it, producing pages of rows as JSON, counting rows |
 | `src/web_handlers.cpp`, `include/web_handlers.h` | Every address the web server answers |
 | `include/chunk_server.h` | A web server class that sends streamed responses efficiently |
 | `include/Definitions.h` | All settings |
 | `include/Secrets.h` | WiFi name and passwords; not kept in version control. `Secrets.example.h` is the template |
 | `web/index.html` | The application page, built into the firmware compressed |
+| `web/admin.html` | The setup page (`/admin/setup/`), built into the firmware the same way |
 | `web/favicon.ico` | The page's icon: the Espressif logo at 16, 32 and 48 pixels, built into the firmware |
-| `web/index.html.gz` | The compressed page, generated before every build; not in version control |
+| `web/index.html.gz`, `web/admin.html.gz` | The compressed pages, generated before every build; not in version control |
 | `web/bootstrap.min.css` | Bootstrap 5.3.8 with one local change (see below), the stylesheet the page links to. Not uploaded itself; see `tools/pack_css.py` |
 | `data/` | The filesystem image: `babyname.db` and `bootstrap.min.css.gz` |
 | `tools/rebuild_db.py` | Builds `data/babyname.db` from a database in the original layout |
-| `tools/pack_page.py` | Compresses `web/index.html` into `web/index.html.gz`; PlatformIO runs it before every build |
+| `tools/pack_page.py` | Compresses `web/index.html` and `web/admin.html` into `.html.gz` files; PlatformIO runs it before every build |
 | `tools/pack_css.py` | Compresses `web/bootstrap.min.css` into `data/bootstrap.min.css.gz` |
 | `tools/test_api.py` | Checks the addresses of a running board against the database file |
 | `tools/test_page.py` | Checks the page of a running board in a real browser |
-| `tools/run_tests.py` | Builds and uploads the firmware, waits for the board and runs both tests |
+| `tools/test_setup.py` | Checks the setup page and the settings interface, including a save and the restart that follows |
+| `tools/run_tests.py` | Builds and uploads the firmware, waits for the board and runs the three tests |
 | `tools/board_tests.py` | The same tests as pytest tests, for VS Code's Testing panel |
 | `tools/requirements.txt` | The Python packages for the Testing panel (pytest) |
 | `pytest.ini` | Tells pytest where the tests are |
@@ -63,7 +67,7 @@ The C++ files, the Python tools and the two configuration files carry detailed c
 
 | Partition | Start | Size | Purpose |
 |---|---|---|---|
-| `nvs` | 0x9000 | 20 KB | System settings such as radio calibration |
+| `nvs` | 0x9000 | 20 KB | System settings such as radio calibration, and the network settings from the setup page (namespace `netcfg`) |
 | (boot data) | 0xE000 | 8 KB | Written by the upload tool with every firmware upload; not a partition |
 | `factory` | 0x10000 | 1920 KB | The firmware, a single copy |
 | `spiffs` | 0x1F0000 | 2048 KB | The LittleFS filesystem (the subtype name is historical) |
@@ -76,18 +80,19 @@ Changing this table moves the partitions. Afterwards both the firmware and the f
 `setup()` in `src/main.cpp` brings the board up in this order:
 
 1. **LED and serial port.** The serial port is started in the Debug build only, at 115200 baud, so later steps can report progress; the Release build prints nothing of its own (see [Serial output](#serial-output)).
-2. **WiFi.** The board tries the network from `Secrets.h` for up to 20 seconds. If that fails it starts its own access point named `ESP32-SQLite-Demo` (password `AP_PASSWORD` in `Secrets.h`), where the application is reachable at `192.168.4.1`.
-3. **Filesystem.** LittleFS is mounted. It is never formatted by the firmware. If it cannot be mounted, the board says so on the page and in `/api/status` (and on the serial port in the Debug build), and carries on without it.
-4. **Database.** `babyname.db` is opened read-only. With PSRAM present, SQLite gets a 1024 KiB page cache, which is larger than the whole database. If opening fails, the server still starts and every query answers with the error.
-5. **Name on the network.** The board announces itself as `esp32.local`.
-6. **Web server.** The handlers are registered and the server starts listening on port 80.
+2. **Settings.** The settings are read from NVS; see [The setup page](#the-setup-page). A value that was never saved gets its default; if a saved value is no longer valid, all settings go back to their defaults except the access point name.
+3. **WiFi.** The radio is set up for the chosen country and transmit power. In access point mode the board starts its access point and nothing else. Otherwise it tries the WiFi network from the settings for up to 20 seconds; if that fails it starts its access point instead. The access point has the name, channel and client limit from the settings (by default `ESP32 SQL` and six random hex digits, channel 1, 4 clients) and the password `AP_PASSWORD` from `Secrets.h`, and the application is reachable through it at `192.168.4.1`. A captive DNS server runs alongside it; see [The setup page](#the-setup-page).
+4. **Filesystem.** LittleFS is mounted. It is never formatted by the firmware. If it cannot be mounted, the board says so on the page and in `/api/status` (and on the serial port in the Debug build), and carries on without it.
+5. **Database.** `babyname.db` is opened read-only. With PSRAM present, SQLite gets a 1024 KiB page cache, which is larger than the whole database. If opening fails, the server still starts and every query answers with the error.
+6. **Name on the network.** The board announces itself by mDNS under its host name in lower case, `esp32-sql.local` by default, and gives the router the same name when it asks for an address.
+7. **Web server.** The handlers are registered and the server starts listening on port 80.
 
 `loop()` then repeats three things: serve one waiting request, do network housekeeping, and sleep for a millisecond so the processor is not kept busy doing nothing.
 
-Network housekeeping (`handleNetwork()`) has two jobs, depending on the mode:
+Network housekeeping (`handleNetwork()`) first carries out a restart that saving new settings asked for (1.5 s after the save, `RESTART_DELAY_MS`), and lets the captive DNS server answer, if it runs, at the chosen interval. Apart from that it has two jobs, depending on the mode:
 
 - **On the WiFi network**, it watches the connection. When it drops, the ESP32 tries to reconnect by itself, and a short drop is over within seconds. If the connection is still lost after one minute (`WIFI_LOST_TIMEOUT_MS`), the board gives up on the network and starts the fallback access point, just as at startup. Because the web server listens on every interface, it carries on unchanged at `192.168.4.1`.
-- **In access-point mode**, every five minutes (`AP_RETRY_MS`) the board restarts to try the WiFi network again, unless somebody is connected to the access point.
+- **With the fallback access point running**, every five minutes (`AP_RETRY_MS`) the board restarts to try the WiFi network again, unless somebody is connected to the access point. In access point mode, chosen on the setup page, there is no network to go back to, and the access point stays.
 
 So after a lasting loss of the network, the board is reachable through its access point after a minute, and back on the network within about five minutes of the network returning.
 
@@ -110,6 +115,9 @@ All addresses accept `GET` only.
 | `/api/status` | The state of the device as JSON |
 | `/bootstrap.min.css` | The Bootstrap stylesheet, gzip-compressed |
 | `/favicon.ico` | The page's icon, shown in the browser tab and in bookmarks |
+| `/admin/setup/` | The setup page; see [The setup page](#the-setup-page). `/admin/setup` without the final slash is sent on to it (301) |
+| `/api/settings` | The settings: `GET` reads them, and the choices the page offers, as JSON; `POST` saves them and restarts the board |
+| any other address, access point running | Sent on (302) to `http://192.168.4.1/` when the request names another site; see the captive DNS server under [The setup page](#the-setup-page) |
 | anything else | `404`, or `405` for a method other than `GET` |
 
 ### `/api/names`
@@ -170,6 +178,49 @@ To change the version, or the stylesheet itself: replace `web/bootstrap.min.css`
 All of the page's styling comes from Bootstrap's classes; see [Styling](#styling).
 
 This is the only file the board publishes. The database file is used by the firmware only and cannot be downloaded.
+
+## The setup page
+
+`/admin/setup/` is a second page, built into the firmware like the application page (`web/admin.html`). Its settings are kept in NVS (the `nvs` partition, namespace `netcfg`), so they survive restarts and firmware and filesystem uploads. It is styled with Bootstrap and has the same header as the application page: the uptime clock (read from `/api/status`, counting on by itself, and started again after a restart) and the theme switcher, which shares its choice with the application page. It is not password protected (see [Purpose](#purpose)).
+
+The page is static: it holds no values when it is sent. Its script reads them from `GET /api/settings`, together with the lists of countries, transmit power levels and DNS intervals, and fills in the fields. So the page can be compressed and cached like the application page, and it offers exactly the choices the board accepts, from the tables in `src/settings.cpp`.
+
+| Field (form name) | NVS key | Default | Rules |
+|---|---|---|---|
+| Host name (`hostname`) | `hostname` | `ESP32-SQL` | 1 to 32 letters, digits and hyphens, not starting or ending with a hyphen |
+| Network mode (`mode`) | `ap_mode` | Join a Wi-Fi network (`sta`) | `sta` (join the network; the access point is the fallback) or `ap` (access point only) |
+| Network name (`sta_ssid`) | `wifi_ssid` | `WIFI_SSID` from `Secrets.h` | 1 to 32 bytes; may be empty in access point mode |
+| Password (`sta_pass`, `sta_pass_confirm`) | `wifi_pass` | `WIFI_PASSWORD` from `Secrets.h` | 8 to 63 characters, typed twice. Both empty keeps the saved password |
+| Open network (`sta_open`) | (an empty `wifi_pass`) | Ticked only if no password is saved | Ticked removes the password. Unticked with no password saved and none typed is refused in `sta` mode |
+| Access point name (`ap_ssid`) | `ap_ssid` | `ESP32 SQL` and six random hex digits, e.g. `ESP32 SQL 3FA9C1` | 1 to 32 bytes |
+| Wi-Fi channel (`wifi_channel`) | `channel` | 1 | 1 to 11 in the United States, Canada, Mexico, Taiwan and "World (safe mode)"; 1 to 13 elsewhere |
+| Maximum clients (`max_clients`) | `max_clients` | 4 | 1 to 10, the most the ESP32's access point serves |
+| DNS interval (`dns_interval`) | `dns_ms` | 10 ms | Every pass, 10, 25, 50 or 100 ms |
+| Country (`country`) | `country` | United States (`US`) | One of 45 in `kWifiCountries` (`src/settings.cpp`): "World (safe mode)" (`01`) first, then the countries in alphabetical order of their codes. The default is set separately, as `DEFAULT_COUNTRY` in `include/settings.h` |
+| Transmit power (`tx_power`) | `tx_power` | 19.5 dBm | One of 12 levels in `kTxPowerLevels`, from 19.5 down to -1 dBm, saved as the radio counts them (quarters of a dBm, e.g. 78; -1 dBm is -4) |
+
+The random digits of the access point name come from `esp_random()`, which draws on the radio's noise, at the first startup. The name is saved at once, so it stays the same from then on; a name that changed at every restart could not be found again. The access point's password is `AP_PASSWORD` from `Secrets.h` and cannot be changed on the page.
+
+The host name is used as typed for DHCP and mDNS, in lower case: `ESP32-SQL` answers at `http://esp32-sql.local`. The page shows the address as the name is typed.
+
+**How the radio settings are used.** At startup, right after the WiFi mode is set, the board sets the country with `esp_wifi_set_country()` (its channel range, fixed rather than taken from nearby access points) and the transmit power with `WiFi.setTxPower()`. Both apply to the WiFi connection as well as to the access point. The channel and the client limit apply to the access point only; on a WiFi network the router decides the channel.
+
+**The captive DNS server.** Whenever the access point runs (chosen, or as the fallback), a DNS server on the board answers every name with the board's address (`DNSServer` in `src/network.cpp`). A request that then arrives for another site, typically a phone checking for internet access such as `http://connectivitycheck.gstatic.com/generate_204`, is sent on to `http://192.168.4.1/`. The phone takes that as a "sign in to network" page and shows the application. Requests by IP address or by a `.local` name are served as usual. The DNS interval sets how often the server answers waiting questions; shorter makes pages start loading sooner on the access point, at the cost of more processor time.
+
+**Reading.** `GET /api/settings` answers, shortened:
+
+```json
+{"hostname":"ESP32-SQL","network_name":"esp32-sql","mode":"sta","sta_ssid":"home","sta_password_set":true,
+ "ap_ssid":"ESP32 SQL 3FA9C1","wifi_channel":1,"max_clients":4,"dns_interval":10,"country":"US","tx_power":78,
+ "max_clients_limit":10,"countries":[{"code":"US","name":"United States","channels":11},...],
+ "tx_powers":[{"value":78,"label":"19.5 dBm (maximum)"},...],"dns_intervals":[{"value":0,"label":"Every pass"},...]}
+```
+
+The WiFi password itself is never sent, only whether one is saved. Texts are escaped as JSON defines, so network names with quotes or backslashes come back exactly.
+
+**Saving.** The page posts an ordinary form to `/api/settings` with the field names in the table. The board checks every field (`checkSettings()` in `src/settings.cpp`, and the password rules in `handleSettingsPost()`); a text longer than its limit is refused before it is copied, rather than cut short, and a number that is not made of digits is refused. An invalid setting is answered 400 with `{"error":"...","field":"..."}`, nothing is saved, and the page marks the field. Valid settings are saved and answered with `{"saved":true,"restarting":true,"network_name":"..."}`, and the board restarts 1.5 s later to apply them. The page checks the same rules itself before sending, so most mistakes never reach the board.
+
+After saving, the page says where the board will be: in WiFi mode `http://<host name>.local/`, after which it waits for the board to answer again and says when it has restarted; in access point mode, the access point's name and `http://192.168.4.1/`.
 
 ## The database
 
@@ -447,22 +498,24 @@ Run these from the project folder.
 | `python tools/rebuild_db.py source.db` | Rebuild `data/babyname.db` from a database in the original layout |
 | `python tools/test_api.py [http://address]` | Check the addresses of a running board |
 | `python tools/test_page.py [http://address]` | Check the page of a running board in a browser |
-| `python tools/run_tests.py [http://address]` | Build, upload, wait for the board, run both tests |
+| `python tools/test_setup.py [http://address] [--no-restart]` | Check the setup page and the settings; without `--no-restart` it saves changed settings and restores them, restarting the board twice |
+| `python tools/run_tests.py [http://address]` | Build, upload, wait for the board, run the three tests |
 
-Both test scripts default to `http://esp32.local`. Passing the board's IP address avoids a name lookup of about a second per request on Windows. Both need only the Python standard library. On this PC, Python is the one that comes with PlatformIO: `%USERPROFILE%\.platformio\penv\Scripts\python.exe`.
+The test scripts default to `http://esp32-sql.local`. Passing the board's IP address avoids a name lookup of about a second per request on Windows. Both need only the Python standard library. On this PC, Python is the one that comes with PlatformIO: `%USERPROFILE%\.platformio\penv\Scripts\python.exe`.
 
-**`tools/run_tests.py`** does the whole routine in one command: it builds and uploads the firmware, waits until the board answers with the new firmware, and runs both test scripts against it, stopping at the first step that fails. It ends with a summary, and its exit code is 0 only if everything passed. It recognises the new firmware by its uptime: a board that answers but has been running longer than the time since the upload has not restarted yet. Before testing it also stops if the board has no usable database, and points out a waiting crash dump. Given a name such as `esp32.local`, it looks the name up once and runs the tests against the IP address the board reports, because the tests make hundreds of requests and a lookup on Windows takes up to a second and now and then fails. `tools/test_api.py` also tries a request again, up to three times, when it cannot reach the board at all. Options:
+**`tools/run_tests.py`** does the whole routine in one command: it builds and uploads the firmware, waits until the board answers with the new firmware, and runs the three test scripts against it, stopping at the first step that fails. It ends with a summary, and its exit code is 0 only if everything passed. It recognises the new firmware by its uptime: a board that answers but has been running longer than the time since the upload has not restarted yet. Before testing it also stops if the board has no usable database, and points out a waiting crash dump. Given a name such as `esp32-sql.local`, it looks the name up once and runs the tests against the IP address the board reports, because the tests make hundreds of requests and a lookup on Windows takes up to a second and now and then fails. `tools/test_api.py` also tries a request again, up to three times, when it cannot reach the board at all. Options:
 
 | Option | Effect |
 |---|---|
 | `--no-upload` | Test the firmware already on the board |
 | `--uploadfs` | Also upload the filesystem image first, after changing the database or the stylesheet |
 | `--env Debug` | Build another environment (default `Release`) |
-| `--api-only`, `--page-only` | Run only one of the two tests |
+| `--api-only`, `--page-only`, `--setup-only` | Run only one of the three tests |
+| `--no-restart` | Run the setup test without saving, so the board is not restarted |
 
 In VS Code the same runs are available as tasks (`.vscode/tasks.json`): Terminal > Run Task... offers "Board tests: upload firmware and run all", "... run all without uploading" and "... upload filesystem and firmware, run all", and "Tasks: Run Test Task" starts the first one. Each asks for the board's address. PlatformIO's own Test button is something else: it runs `pio test`, which builds C++ unit tests, and this project has none.
 
-The same tests also appear in VS Code's Testing panel, through pytest and the Python extension: `tools/board_tests.py` holds three tests, "board is ready" (it answers, has its database, and has no crash dump waiting), "addresses" (runs `tools/test_api.py`) and "page in browser" (runs `tools/test_page.py`). A failing test lists the checks that failed, and its output holds the script's full report. These tests do not build or upload anything; they test the firmware already on the board. `pytest.ini` tells pytest where they are, and `.vscode/settings.json` turns pytest on and selects the project's own Python environment. That environment is set up once:
+The same tests also appear in VS Code's Testing panel, through pytest and the Python extension: `tools/board_tests.py` holds four tests, "board is ready" (it answers, has its database, and has no crash dump waiting), "addresses" (runs `tools/test_api.py`), "page in browser" (runs `tools/test_page.py`) and "setup page" (runs `tools/test_setup.py`, which restarts the board twice). A failing test lists the checks that failed, and its output holds the script's full report. These tests do not build or upload anything; they test the firmware already on the board. `pytest.ini` tells pytest where they are, and `.vscode/settings.json` turns pytest on and selects the project's own Python environment. That environment is set up once:
 
 ```powershell
 & "$env:USERPROFILE\.platformio\penv\Scripts\python.exe" -m venv .venv
@@ -470,7 +523,7 @@ The same tests also appear in VS Code's Testing panel, through pytest and the Py
 equirements.txt
 ```
 
-The board's address comes from the environment variable `BOARD_URL`, default `http://esp32.local`. To use another, put a line such as `BOARD_URL=http://172.16.100.185` in a file named `.env` in the project folder, which the Python extension reads. From a terminal the same tests run with `.venv\Scripts\python.exe -m pytest`.
+The board's address comes from the environment variable `BOARD_URL`, default `http://esp32-sql.local`. To use another, put a line such as `BOARD_URL=http://172.16.100.185` in a file named `.env` in the project folder, which the Python extension reads. From a terminal the same tests run with `.venv\Scripts\python.exe -m pytest`.
 
 A full run takes about a minute and a half: 30 to 40 s to build and upload, under 10 s for the board to restart, and about 25 s for each test.
 
@@ -478,7 +531,9 @@ A full run takes about a minute and a half: 30 to 40 s to build and upload, unde
 
 **`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display (its format, that it counts on by itself, and the conversion into days, hours, minutes and seconds), that the Bootstrap stylesheet is applied, the light and dark theme (Auto following a system setting the browser is told to pretend, both fixed choices, and a choice surviving a reload), that the crash notice matches what the board reports, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, the first and last buttons, the page numbers and both pagers, sorting the whole search by a column in both directions and across pages and searches, searching from both forms without a reload, an empty result, the back button, and the rows per page with the primary sex filter, including that the page opens at 25 rows again after a reload, and the loading overlay: shown at once by a search and gone when the rows are there, covering the window with its box centred both ways, the darkened background, the text, and its colours in both themes, the page numbers around the current page (5 at either end, 9 in the middle), and that changing the sort or the rows per page keeps the current page. It makes 93 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
 
-Both passed in full against the firmware described here.
+**`tools/test_setup.py`** checks the setup page's address and its redirect, that the page arrives compressed and unpacks to `web/admin.html` and is answered 304 when asked again with its ETag, what `GET /api/settings` returns (the eleven values and the three lists, and never the WiFi password), and that 24 kinds of invalid settings are each refused with the right field named, nothing saved and no restart. In the browser it checks the uptime clock and the theme switcher, that the page shows the saved settings and the board's lists with no template placeholder left, the address as the host name is typed, the channel limit following the country, the open-network box switching the password fields off, and its own checks of the fields. Then it saves a changed host name, channel, client limit, DNS interval, country and transmit power through the page, waits for the restart, checks that they were kept and everything else, including the WiFi password, is unchanged, and saves the original settings back. The mode and the WiFi network are not changed, so the board stays on the same network.
+
+All three passed in full against the firmware described here, on 16 October 2026; the setup test makes 67 checks, and its save and restore restarted the board in about 6 seconds each.
 
 To replace the data: run `tools/rebuild_db.py` on a database in the original layout, then upload the filesystem. The original the current data was built from is no longer kept in the project, but it is in the repository's history: `git show c60ca07:db_backup/babyname.original.db > babyname.original.db` takes it out.
 
@@ -610,13 +665,14 @@ That is a gain of about 2.5% on rows, none on counting, for 122 KB more flash. I
 
 **Access and security**
 
-- There is no login, by design (see [Purpose](#purpose)). Anyone on the network can query the database and read the device status, so the board belongs on a trusted network only.
-- The WiFi password is stored as plain text in `include/Secrets.h`.
+- There is no login, by design (see [Purpose](#purpose)). Anyone on the network can query the database and read the device status, and anyone who can reach the setup page can change the network settings, which can take the board off the network. The board belongs on a trusted network only.
+- The WiFi passwords are stored as plain text: the defaults in `include/Secrets.h`, and the saved one in NVS, which can be read out over the serial cable. `/api/settings` never sends the saved password back.
+- The access point password can only be changed in `include/Secrets.h`.
 
 **Reliability**
 
 - The server answers one request at a time. A slow request delays everyone else. The largest single request is the first sorted page of a search that matches the whole table, about 3 s. The count for such a search, and a jump to its last page in name order, take about 0.7 s each.
-- Serial uploads were unreliable on this board earlier in development. At times the board did not enter download mode without the BOOT button held, and at other times it stayed in download mode and did not start. All recent uploads worked unattended; the cause was never identified.
+- Serial uploads are unreliable on this board. Since 15 October 2026 it does not enter download mode by itself: the reset line from the USB adapter works, but the boot line (GPIO0) is not pulled low, with both versions of the upload tool. Uploading then needs the BOOT button held until "Connecting..." appears. On 16 October, with a second board unplugged from the same USB hub, uploads worked unattended again. Earlier in development it sometimes behaved the same way, and at other times stayed in download mode and did not start.
 
 **The page**
 
@@ -633,7 +689,12 @@ That is a gain of about 2.5% on rows, none on counting, for 122 KB more flash. I
 
 **Network**
 
-- Looking up `esp32.local` takes about a second on Windows. The board's IP address is assigned by the router and changed during development (from `.167` to `.185`).
+- Looking up the `.local` name takes about a second on Windows. The board's IP address is assigned by the router and changed during development (`.167`, `.185`, then `.167` again).
+- A host name is changed by restarting the board. Until the router's and the PC's name caches catch up, the old name may still be found, and the new one not yet.
+- While the access point runs, the captive DNS server gives the board's address for every name, so a device connected to it reaches nothing else by name. The access point never offered internet access, so nothing is lost, but a phone may switch back to mobile data on its own.
+- Country and transmit power are applied as the ESP32 allows; the board does not check them against a country's legal power limit beyond the channel range.
+- In access point mode the board leaves the WiFi network for good, until the mode is changed back on the setup page, through the access point at `192.168.4.1`. A WiFi network name or password typed wrongly has a similar effect: the board falls back to its access point after 20 seconds and tries again every five minutes.
+- Other PlatformIO projects on the same PC can replace the shared framework and upload tool with versions this project does not build with. `platformio.ini` therefore gives this project its own packages folder (`packages_dir`), filled by the first build.
 
 **Housekeeping**
 
@@ -648,4 +709,4 @@ In rough order of value.
 
 Not on this list, because the project is a read-only demonstration: writing to the database from the board, a login, and encryption. See [Purpose](#purpose).
 
-Done since the first version of this document: version control, a content-based cache label for the page, no automatic formatting of the filesystem, an automated browser test, a row total, searching without a reload, column sorting (now of the whole search, on the board), first and last buttons, removal of the file listing, the Bootstrap stylesheet and pagination, the crash-dump notice, the compressed page, a one-command test run, serial output in the Debug build only, the access point after a lost connection, the `-O2` measurement, and the crash-dump procedure.
+Done since the first version of this document: version control, a content-based cache label for the page, no automatic formatting of the filesystem, an automated browser test, a row total, searching without a reload, column sorting (now of the whole search, on the board), first and last buttons, removal of the file listing, the Bootstrap stylesheet and pagination, the crash-dump notice, the compressed page, a one-command test run, serial output in the Debug build only, the access point after a lost connection, the `-O2` measurement, the crash-dump procedure, and the setup page with settings kept in NVS.

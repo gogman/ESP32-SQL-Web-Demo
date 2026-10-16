@@ -17,10 +17,17 @@
 /* ------------------------------------------------------------------ */
 
 /*
- * The name the board announces on the local network. With "esp32" the
- * application is reachable at http://esp32.local.
+ * The board's default host name, used until another one is saved on the
+ * setup page (/admin/setup/). The network uses it in lower case, so the
+ * application is reachable at http://esp32-sql.local. See include/settings.h.
  */
-static const char MDNS_HOSTNAME[] = "esp32";
+static const char DEFAULT_HOSTNAME[] = "ESP32-SQL";
+
+/*
+ * The start of the access point's default name. Six random hex digits are
+ * added at the first startup, for example "ESP32 SQL 3FA9C1".
+ */
+static const char DEFAULT_AP_PREFIX[] = "ESP32 SQL";
 
 /* The TCP port the web server listens on. 80 is the standard port for http. */
 static const int HTTP_PORT = 80;
@@ -30,13 +37,6 @@ static const int HTTP_PORT = 80;
  * milliseconds, before giving up and starting the fallback access point.
  */
 static const unsigned long WIFI_CONNECT_TIMEOUT_MS = 20000;
-
-/*
- * The network name of the fallback access point. Its password is
- * AP_PASSWORD in Secrets.h. When connected to it, the application is at
- * http://192.168.4.1.
- */
-static const char AP_SSID[] = "ESP32-SQLite-Demo";
 
 /*
  * How long the WiFi connection may stay lost while the board is running,
@@ -63,7 +63,7 @@ static const unsigned long AP_RETRY_MS = 300000;
  * may stay empty, in which case the gateway is used for name lookups.
  *
  * A fixed address lets you open the application by IP and skip the
- * "esp32.local" name lookup, which can take about a second on Windows.
+ * "esp32-sql.local" name lookup, which can take about a second on Windows.
  * Make sure the address is outside the range your router hands out.
  */
 static const char STATIC_IP[] = "";
@@ -125,6 +125,21 @@ static const int DB_DEFAULT_ROWS = 25;
 #define NAMES_API_URL "/api/names"
 #define COUNT_API_URL "/api/count"
 #define STATUS_API_URL "/api/status"
+
+/*
+ * The setup page, where the network settings are changed, and the JSON
+ * interface it reads and saves them through. web/admin.html calls the
+ * same interface address.
+ */
+#define SETUP_PAGE_URL "/admin/setup/"
+#define SETTINGS_API_URL "/api/settings"
+
+/*
+ * How long the board waits after saving new settings before it restarts to
+ * apply them, in milliseconds. The pause lets the answer to the save reach
+ * the browser first.
+ */
+static const unsigned long RESTART_DELAY_MS = 1500;
 
 /*
  * The Bootstrap stylesheet.

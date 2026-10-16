@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>Setup - ESP32 Sqlite DB Demo</title>
+<link rel='icon' href='/favicon.ico'>
+<link rel='stylesheet' href='/bootstrap.min.css?v=5.3.8-1'>
+<style>
+.bi { vertical-align: -0.125em; }
+</style>
+<script>
+function storedTheme() {
+  try { return localStorage.getItem('theme') || 'auto'; } catch (error) { return 'auto'; }
+}
+
+function applyTheme(choice) {
+  var dark = choice == 'dark' || (choice == 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.setAttribute('data-bs-theme', dark ? 'dark' : 'light');
+}
+
+applyTheme(storedTheme());
+</script>
+</head>
+<body class='bg-body-tertiary'>
+<header class='bg-primary text-white py-3 mb-4'>
+<div class='container d-flex flex-wrap justify-content-between align-items-center gap-2'>
+<h1 class='h4 mb-0'><a href='/' class='text-white text-decoration-none'>ESP32 Sqlite DB Demo</a></h1>
+<div class='d-flex flex-wrap align-items-center gap-3'>
+<a href='/' class='btn btn-outline-light btn-sm'>Back to the search</a>
+<span>Uptime: <span id='uptime'>...</span></span>
+<div class='btn-group btn-group-sm' role='group' aria-label='Colour theme'>
+<input type='radio' class='btn-check' name='theme' id='themeLight' value='light' autocomplete='off'>
+<label class='btn btn-outline-light' for='themeLight' title='Light'><svg class='bi' width='16' height='16' fill='currentColor' viewBox='0 0 16 16' aria-hidden='true'><path d='M8 11a3 3 0 1 1 0-6 3 3 0 0 1 0 6m0 1a4 4 0 1 0 0-8 4 4 0 0 0 0 8M8 0a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2A.5.5 0 0 1 8 0m0 13a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2A.5.5 0 0 1 8 13m8-5a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1 0-1h2a.5.5 0 0 1 .5.5M3 8a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1 0-1h2A.5.5 0 0 1 3 8m10.657-5.657a.5.5 0 0 1 0 .707l-1.414 1.415a.5.5 0 1 1-.707-.708l1.414-1.414a.5.5 0 0 1 .707 0m-9.193 9.193a.5.5 0 0 1 0 .707L3.05 13.657a.5.5 0 0 1-.707-.707l1.414-1.414a.5.5 0 0 1 .707 0m9.193 2.121a.5.5 0 0 1-.707 0l-1.414-1.414a.5.5 0 0 1 .707-.707l1.414 1.414a.5.5 0 0 1 0 .707M4.464 4.465a.5.5 0 0 1-.707 0L2.343 3.05a.5.5 0 1 1 .707-.707l1.414 1.414a.5.5 0 0 1 0 .708'/></svg><span class='visually-hidden'>Light</span></label>
+<input type='radio' class='btn-check' name='theme' id='themeDark' value='dark' autocomplete='off'>
+<label class='btn btn-outline-light' for='themeDark' title='Dark'><svg class='bi' width='16' height='16' fill='currentColor' viewBox='0 0 16 16' aria-hidden='true'><path d='M6 .278a.77.77 0 0 1 .08.858 7.2 7.2 0 0 0-.878 3.46c0 4.021 3.278 7.277 7.318 7.277q.792-.001 1.533-.16a.79.79 0 0 1 .81.316.73.73 0 0 1-.031.893A8.35 8.35 0 0 1 8.344 16C3.734 16 0 12.286 0 7.71 0 4.266 2.114 1.312 5.124.06A.75.75 0 0 1 6 .278M4.858 1.311A7.27 7.27 0 0 0 1.025 7.71c0 4.02 3.279 7.276 7.319 7.276a7.32 7.32 0 0 0 5.205-2.162q-.506.063-1.029.063c-4.61 0-8.343-3.714-8.343-8.29 0-1.167.242-2.278.681-3.286'/></svg><span class='visually-hidden'>Dark</span></label>
+<input type='radio' class='btn-check' name='theme' id='themeAuto' value='auto' autocomplete='off'>
+<label class='btn btn-outline-light' for='themeAuto' title='Auto: follow the system setting'><svg class='bi' width='16' height='16' fill='currentColor' viewBox='0 0 16 16' aria-hidden='true'><path d='M0 4s0-2 2-2h12s2 0 2 2v6s0 2-2 2h-4q0 1 .25 1.5H11a.5.5 0 0 1 0 1H5a.5.5 0 0 1 0-1h.75Q6 13 6 12H2s-2 0-2-2zm1.398-.855a.76.76 0 0 0-.254.302A1.5 1.5 0 0 0 1 4.01V10c0 .325.078.502.145.602q.105.156.302.254a1.5 1.5 0 0 0 .538.143L2.01 11H14c.325 0 .502-.078.602-.145a.76.76 0 0 0 .254-.302 1.5 1.5 0 0 0 .143-.538L15 9.99V4c0-.325-.078-.502-.145-.602a.76.76 0 0 0-.302-.254A1.5 1.5 0 0 0 13.99 3H2c-.325 0-.502.078-.602.145'/></svg><span class='visually-hidden'>Auto</span></label>
+</div>
+</div>
+</div>
+</header>
+
+<main class='container' style='max-width: 48rem'>
+<div id='message' class='alert' role='alert' hidden></div>
+
+<form id='setup' class='mb-4' novalidate>
+ <div class="card mb-3">
+        <div class="card-body">
+          <h2 class="h5 card-title">Device</h2>
+          <label class="form-label" for="hostname">Host name</label>
+          <input class="form-control" type="text" id="hostname" name="hostname" maxlength="32"
+            pattern="[A-Za-z0-9]([A-Za-z0-9\-]*[A-Za-z0-9])?" required autofocus>
+          <div class="form-text">Letters, digits and hyphens. When joined to a network the device answers at
+            http://<em id="networkName">host-name</em></div>
+        </div>
+      </div>
+
+      <div class="card mb-3">
+        <div class="card-body">
+          <h2 class="h5 card-title">Network mode</h2>
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="mode" id="mode-ap" value="ap">
+            <label class="form-check-label" for="mode-ap">Access point &mdash; run its own Wi-Fi network with the portal</label>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="mode" id="mode-sta" value="sta">
+            <label class="form-check-label" for="mode-sta">Join a Wi-Fi network</label>
+          </div>
+          <div class="form-text">If joining the network fails, the device falls back to access point mode.</div>
+        </div>
+      </div>
+
+      <div class="card mb-3">
+        <div class="card-body">
+          <h2 class="h5 card-title">Wi-Fi network to join</h2>
+          <label class="form-label" for="sta_ssid">Network name (SSID)</label>
+          <input class="form-control mb-3" type="text" id="sta_ssid" name="sta_ssid" maxlength="32">
+
+          <label class="form-label" for="sta_pass">Password</label>
+          <input class="form-control mb-3" type="password" id="sta_pass" name="sta_pass" maxlength="63" autocomplete="new-password">
+
+          <label class="form-label" for="sta_pass_confirm">Confirm password</label>
+          <input class="form-control" type="password" id="sta_pass_confirm" name="sta_pass_confirm" maxlength="63"
+            autocomplete="new-password">
+          <div class="invalid-feedback">The passwords don't match.</div>
+
+          <div class="form-check mt-2">
+            <input class="form-check-input" type="checkbox" name="sta_open" id="sta_open" value="1">
+            <label class="form-check-label" for="sta_open">Open network (no password)</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mb-3">
+        <div class="card-body">
+          <h2 class="h5 card-title">Access point</h2>
+          <label class="form-label" for="ap_ssid">Access point name (SSID)</label>
+          <input class="form-control mb-3" type="text" id="ap_ssid" name="ap_ssid" maxlength="32" required>
+
+          <div class="row g-3">
+            <div class="col-sm-4">
+              <label class="form-label" for="wifi_channel">Wi-Fi channel</label>
+              <input class="form-control" type="number" id="wifi_channel" name="wifi_channel"
+                min="1" max="11" required>
+            </div>
+            <div class="col-sm-4">
+              <label class="form-label" for="max_clients">Maximum clients</label>
+              <input class="form-control" type="number" id="max_clients" name="max_clients"
+                min="1" max="10" required>
+            </div>
+            <div class="col-sm-4">
+              <label class="form-label" for="dns_interval">DNS interval</label>
+              <select class="form-select" id="dns_interval" name="dns_interval"></select>
+            </div>
+          </div>
+          <div class="form-text">Channels 1, 6 and 11 don't overlap; 12 and 13 aren't allowed in North America. A
+            shorter DNS interval makes pages load faster on the portal at the cost of more CPU time.</div>
+        </div>
+      </div>
+
+      <div class="card mb-3">
+        <div class="card-body">
+          <h2 class="h5 card-title">Radio</h2>
+          <div class="row g-3">
+            <div class="col-sm-7">
+              <label class="form-label" for="country">Country</label>
+              <select class="form-select" id="country" name="country"></select>
+            </div>
+            <div class="col-sm-5">
+              <label class="form-label" for="tx_power">Transmit power</label>
+              <select class="form-select" id="tx_power" name="tx_power"></select>
+            </div>
+          </div>
+          <div class="form-text">The country sets which channels and power levels are legal; choose where the device
+            is used. Lower transmit power shrinks the range of the access point and reduces power use.</div>
+        </div>
+      </div>
+
+      <button class="btn btn-primary" type="submit" id="save">Save and restart</button>
+</form>
+</main>
+
+<script>
+/*
+ * The form's fields, by the name the board uses for them. Each gets a
+ * message box under it for the board's or the page's complaints.
+ */
+var FIELDS = ['hostname', 'mode', 'sta_ssid', 'sta_pass', 'sta_pass_confirm', 'ap_ssid',
+              'wifi_channel', 'max_clients', 'dns_interval', 'country', 'tx_power'];
+var form = document.getElementById('setup');
+var saved = null;
+
+function element(id) { return document.getElementById(id); }
+
+function bytes(text) { return new TextEncoder().encode(text).length; }
+
+function twoDigits(number) { return (number < 10 ? '0' : '') + number; }
+
+function formatUptime(seconds) {
+  var minutes = Math.floor(seconds / 60), hours = Math.floor(minutes / 60);
+  return Math.floor(hours / 24) + 'd ' + hours % 24 + ':' + twoDigits(minutes % 60) + ':' + twoDigits(seconds % 60);
+}
+
+/*
+ * Shows the board's uptime and counts it on once a second, without asking
+ * the board again. Called again after a restart, with the new uptime.
+ */
+var uptimeTimer = null;
+
+function startUptime(seconds) {
+  var started = performance.now() - seconds * 1000;
+  function tick() {
+    element('uptime').textContent = formatUptime(Math.floor((performance.now() - started) / 1000));
+  }
+  clearInterval(uptimeTimer);
+  tick();
+  uptimeTimer = setInterval(tick, 1000);
+}
+
+function showMessage(kind, text, link) {
+  var box = element('message');
+  box.className = 'alert alert-' + kind;
+  box.textContent = text;
+  if (link) {
+    var anchor = document.createElement('a');
+    anchor.href = link;
+    anchor.className = 'alert-link';
+    anchor.textContent = link;
+    box.appendChild(document.createTextNode(' '));
+    box.appendChild(anchor);
+  }
+  box.hidden = false;
+  box.scrollIntoView({ block: 'nearest' });
+}
+
+function enable(on) {
+  Array.prototype.forEach.call(form.elements, function (control) { control.disabled = !on; });
+  if (on) showOpen();
+}
+
+function mode() { return element('mode-ap').checked ? 'ap' : 'sta'; }
+
+/* The input a field's message belongs to; for the mode, the last radio button. */
+function inputOf(name) { return name == 'mode' ? element('mode-sta') : element(name); }
+
+/* The message box under a field, made the first time it is needed (the confirmation has its own). */
+function feedbackOf(name) {
+  var input = inputOf(name);
+  var box = input.parentNode.querySelector('.invalid-feedback[data-for="' + name + '"]') ||
+            (name == 'sta_pass_confirm' ? input.parentNode.querySelector('.invalid-feedback:not([data-for])') : null);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'invalid-feedback';
+    box.setAttribute('data-for', name);
+    input.insertAdjacentElement('afterend', box);
+  }
+  return box;
+}
+
+function setError(name, text) {
+  inputOf(name).classList.toggle('is-invalid', !!text);
+  if (text) feedbackOf(name).textContent = text;
+}
+
+function channels() {
+  var country = (saved.countries || []).filter(function (c) { return c.code == element('country').value; })[0];
+  return country ? country.channels : 11;
+}
+
+/* The page's own checks, the same as the board's, so most mistakes never reach it. */
+function check() {
+  var problems = {};
+  var hostname = element('hostname').value;
+  var staSsid = element('sta_ssid').value;
+  var password = element('sta_pass').value;
+  var open = element('sta_open').checked;
+  var channel = Number(element('wifi_channel').value);
+  var clients = Number(element('max_clients').value);
+
+  if (!/^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$/.test(hostname) || hostname.length > 32)
+    problems.hostname = 'The host name must be 1 to 32 letters, digits and hyphens, not starting or ending with a hyphen';
+  if (bytes(staSsid) > 32 || (mode() == 'sta' && staSsid.length == 0))
+    problems.sta_ssid = 'The WiFi network name must be 1 to 32 bytes long';
+  if (!open && password.length > 0 && (password.length < 8 || password.length > 63))
+    problems.sta_pass = 'The WiFi password must be 8 to 63 characters long';
+  else if (!open && password.length == 0 && mode() == 'sta' && !saved.sta_password_set)
+    problems.sta_pass = "Enter the network's password, or tick Open network";
+  if (!open && password != element('sta_pass_confirm').value)
+    problems.sta_pass_confirm = "The passwords don't match.";
+  if (bytes(element('ap_ssid').value) < 1 || bytes(element('ap_ssid').value) > 32)
+    problems.ap_ssid = 'The access point name must be 1 to 32 bytes long';
+  if (!Number.isInteger(channel) || channel < 1 || channel > channels())
+    problems.wifi_channel = 'The channel must be 1 to ' + channels() + ' in this country';
+  if (!Number.isInteger(clients) || clients < 1 || clients > saved.max_clients_limit)
+    problems.max_clients = 'The maximum number of clients must be 1 to ' + saved.max_clients_limit;
+
+  FIELDS.forEach(function (name) { setError(name, problems[name]); });
+  return Object.keys(problems).length == 0;
+}
+
+function showNetworkName() {
+  element('networkName').textContent = element('hostname').value.toLowerCase() || 'host-name';
+}
+
+/* An open network has no password: the password fields are switched off while it is ticked. */
+function showOpen() {
+  var open = element('sta_open').checked;
+  ['sta_pass', 'sta_pass_confirm'].forEach(function (id) {
+    element(id).disabled = open;
+    if (open) element(id).value = '';
+  });
+}
+
+function fillList(id, options, value) {
+  var list = element(id);
+  list.textContent = '';
+  options.forEach(function (option) {
+    var item = document.createElement('option');
+    item.value = option.value;
+    item.textContent = option.label;
+    list.appendChild(item);
+  });
+  list.value = value;
+}
+
+function showChannelLimit() {
+  element('wifi_channel').max = channels();
+}
+
+function showSettings(data) {
+  saved = data;
+  element(data.mode == 'ap' ? 'mode-ap' : 'mode-sta').checked = true;
+  element('hostname').value = data.hostname;
+  element('sta_ssid').value = data.sta_ssid;
+  element('sta_pass').value = '';
+  element('sta_pass_confirm').value = '';
+  element('sta_pass').placeholder = data.sta_password_set ? 'Saved; leave empty to keep it' : 'No password saved';
+  element('sta_open').checked = !data.sta_password_set;
+  element('ap_ssid').value = data.ap_ssid;
+  element('wifi_channel').value = data.wifi_channel;
+  element('max_clients').value = data.max_clients;
+  element('max_clients').max = data.max_clients_limit;
+  fillList('country', data.countries.map(function (c) { return { value: c.code, label: c.name }; }), data.country);
+  fillList('tx_power', data.tx_powers, data.tx_power);
+  fillList('dns_interval', data.dns_intervals, data.dns_interval);
+  showChannelLimit();
+  showNetworkName();
+  enable(true);
+}
+
+function waitForRestart(address) {
+  var started = Date.now();
+  function attempt() {
+    fetch('/api/status', { cache: 'no-store' })
+      .then(function (response) { return response.json(); })
+      .then(function (status) {
+        if (status.uptime < (Date.now() - started) / 1000 + 5) {
+          startUptime(status.uptime);
+          showMessage('success', 'The board has restarted with the new settings.', address);
+        } else {
+          setTimeout(attempt, 1000);
+        }
+      })
+      .catch(function () {
+        if (Date.now() - started < 60000) setTimeout(attempt, 1000);
+        else showMessage('warning', 'The board has not answered at this address since it restarted. Try', address);
+      });
+  }
+  setTimeout(attempt, 3000);
+}
+
+element('hostname').oninput = showNetworkName;
+element('sta_open').onchange = showOpen;
+element('country').onchange = showChannelLimit;
+
+form.onsubmit = function (event) {
+  event.preventDefault();
+  if (!saved || !check()) return;
+
+  var body = new URLSearchParams();
+  body.set('hostname', element('hostname').value);
+  body.set('mode', mode());
+  body.set('sta_ssid', element('sta_ssid').value);
+  body.set('sta_pass', element('sta_pass').value);
+  body.set('sta_pass_confirm', element('sta_pass_confirm').value);
+  if (element('sta_open').checked) body.set('sta_open', '1');
+  body.set('ap_ssid', element('ap_ssid').value);
+  body.set('wifi_channel', element('wifi_channel').value);
+  body.set('max_clients', element('max_clients').value);
+  body.set('dns_interval', element('dns_interval').value);
+  body.set('country', element('country').value);
+  body.set('tx_power', element('tx_power').value);
+
+  enable(false);
+  element('save').textContent = 'Saving...';
+
+  fetch('/api/settings', { method: 'POST', body: body })
+    .then(function (response) { return response.json(); })
+    .then(function (data) {
+      element('save').textContent = 'Save and restart';
+      if (data.error) {
+        enable(true);
+        if (data.field && FIELDS.indexOf(data.field) >= 0) setError(data.field, data.error);
+        showMessage('danger', 'Not saved: ' + data.error);
+        return;
+      }
+      if (mode() == 'ap') {
+        showMessage('info', 'Saved. The board is restarting as the access point "' + element('ap_ssid').value +
+                    '". Connect to that network, then open', 'http://192.168.4.1/');
+      } else {
+        var address = 'http://' + data.network_name + '.local/';
+        showMessage('info', 'Saved. The board is restarting and joining "' + element('sta_ssid').value + '". It will be at', address);
+        waitForRestart(address);
+      }
+    })
+    .catch(function (error) {
+      element('save').textContent = 'Save and restart';
+      enable(true);
+      showMessage('danger', 'Not saved: ' + error.message);
+    });
+};
+
+var themeChoice = storedTheme();
+
+document.querySelectorAll('input[name=theme]').forEach(function (input) {
+  input.checked = input.value == themeChoice;
+  input.onchange = function () {
+    themeChoice = input.value;
+    try { localStorage.setItem('theme', themeChoice); } catch (error) {}
+    applyTheme(themeChoice);
+  };
+});
+
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function () {
+  if (themeChoice == 'auto') applyTheme('auto');
+});
+
+fetch('/api/status', { cache: 'no-store' })
+  .then(function (response) { return response.json(); })
+  .then(function (status) { startUptime(status.uptime); })
+  .catch(function () { element('uptime').textContent = 'unknown'; });
+
+enable(false);
+
+fetch('/api/settings', { cache: 'no-store' })
+  .then(function (response) { return response.json(); })
+  .then(function (data) {
+    if (data.error) throw new Error(data.error);
+    showSettings(data);
+  })
+  .catch(function (error) { showMessage('danger', 'The settings could not be read: ' + error.message); });
+</script>
+</body>
+</html>

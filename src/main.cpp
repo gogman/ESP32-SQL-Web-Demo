@@ -7,7 +7,8 @@
  * right order in setup(), and keeps everything running from loop().
  *
  * The real work lives in the other modules:
- *   network.cpp       - joining WiFi, the fallback access point, mDNS
+ *   settings.cpp      - the network settings, kept in NVS
+ *   network.cpp       - joining WiFi, the access point, mDNS
  *   db_mgr.cpp        - opening the database and running the paged query
  *   web_handlers.cpp  - every address the web server answers
  *   chunk_server.h    - a WebServer that sends chunked responses efficiently
@@ -20,6 +21,7 @@
 #include "chunk_server.h"
 #include "db_mgr.h"
 #include "network.h"
+#include "settings.h"
 #include "web_handlers.h"
 
 /*
@@ -40,13 +42,15 @@ static db_mgr dbMgr;
  *
  * The order matters:
  *   1. LED and serial port first, so every later step can report progress.
- *   2. WiFi, which may take up to WIFI_CONNECT_TIMEOUT_MS and falls back to
- *      an access point if the network cannot be joined.
- *   3. The filesystem, because the database is a file on it. It is never
+ *   2. The saved settings, which the network needs.
+ *   3. WiFi, which may take up to WIFI_CONNECT_TIMEOUT_MS and falls back to
+ *      an access point if the network cannot be joined (or is only the
+ *      access point, if the settings say so).
+ *   4. The filesystem, because the database is a file on it. It is never
  *      formatted here; if it cannot be mounted, the board says so.
- *   4. The database, which needs the filesystem and (for its cache) PSRAM.
- *   5. mDNS and the web handlers, which need the network and the database.
- *   6. Finally the server starts listening.
+ *   5. The database, which needs the filesystem and (for its cache) PSRAM.
+ *   6. mDNS and the web handlers, which need the network and the database.
+ *   7. Finally the server starts listening.
  */
 void setup(void)
 {
@@ -62,6 +66,9 @@ void setup(void)
    */
   LOG_BEGIN(115200);
   LOG_PRINTLN("");
+
+  /* The mode, names and WiFi password, from NVS or their defaults. */
+  loadSettings();
 
   /*
    * Join the WiFi network, or start the fallback access point. The return
@@ -116,7 +123,7 @@ void setup(void)
     LOG_PRINTLN(dbMgr.lastError());
   }
 
-  /* Make the board reachable as "<MDNS_HOSTNAME>.local" instead of only by IP address. */
+  /* Make the board reachable as "<host name>.local" instead of only by IP address. */
   announceWebServer();
 
   /*
@@ -142,7 +149,10 @@ void loop(void)
    */
   server.handleClient();
 
-  /* Housekeeping for the network: retries the WiFi network after a fallback. */
+  /*
+   * Housekeeping for the network: retries the WiFi network after a fallback,
+   * and restarts the board after new settings were saved.
+   */
   handleNetwork();
 
   /*

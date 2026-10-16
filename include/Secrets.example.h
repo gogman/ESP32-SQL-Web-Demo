@@ -15,16 +15,17 @@
 
 /*
  * The WiFi network the board joins at startup: its name (SSID) and its
- * password. The ESP32 only supports 2.4 GHz networks.
+ * password. These are the defaults, used until other ones are saved on the
+ * setup page (/admin/setup/). The ESP32 only supports 2.4 GHz networks.
  */
 static const char WIFI_SSID[] = "your-network";
 static const char WIFI_PASSWORD[] = "your-password";
 
 /*
- * The password of the fallback access point the board starts when it cannot
- * join the network above (its name is AP_SSID in Definitions.h). WiFi
- * requires this password to be at least 8 characters long; with a shorter
- * one the access point fails to start.
+ * The password of the board's access point, used in access point mode and
+ * when the board cannot join its WiFi network. The access point's name is
+ * set on the setup page. WiFi requires this password to be at least 8
+ * characters long; with a shorter one the access point fails to start.
  */
 static const char AP_PASSWORD[] = "change-me-please";
 

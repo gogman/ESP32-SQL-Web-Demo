@@ -8,7 +8,7 @@
     //
     // Run them with Terminal > Run Task..., or Ctrl+Shift+P > "Tasks: Run Test
     // Task" for the default one. Each asks for the board's address; a name
-    // such as esp32.local is looked up once and the tests then use the IP
+    // such as esp32-sql.local is looked up once and the tests then use the IP
     // address the board reports.
     "version": "2.0.0",
     "options": {
@@ -55,7 +55,7 @@
             "id": "address",
             "type": "promptString",
             "description": "The board's address",
-            "default": "http://esp32.local"
+            "default": "http://esp32-sql.local"
         }
     ]
 }
