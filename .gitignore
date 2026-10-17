@@ -6,7 +6,7 @@
 
 # Generated before every build by tools/pack_page.py
 web/index.html.gz
-web/admin.html.gz
+web/setup.html.gz
 
 # Passwords
 include/Secrets.h

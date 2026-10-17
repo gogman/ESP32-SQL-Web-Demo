@@ -17,8 +17,8 @@
  *   /api/names    one page of names from the database, as JSON
  *   /api/count    how many names a range holds, as JSON
  *   /api/status   the state of the device, as JSON
- *   /admin/setup/ the setup page, where the network settings are changed
- *                 (/admin/setup without the slash is sent on to it)
+ *   /setup/       the setup page, where the network settings are changed
+ *                 (/setup without the slash is sent on to it)
  *   /api/settings the network settings: GET reads them as JSON, POST saves
  *                 them and restarts the board
  *   /bootstrap.min.css  the Bootstrap stylesheet, gzip-compressed
