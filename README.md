@@ -1,4 +1,4 @@
-# ESP32 SQL Demo
+# ESP32 SQL Web Demo
 
 A small web application that runs entirely on an ESP32. The board keeps a SQLite database of US baby names (25,192 rows) on its own flash and serves a Bootstrap page for searching it: names starting with some text, or a range of names, with paging, sorting of the whole result, a primary-sex filter and a light/dark theme. No PC or internet connection is needed once the board is running.
 
