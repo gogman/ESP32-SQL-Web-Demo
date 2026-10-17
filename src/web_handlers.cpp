@@ -44,9 +44,9 @@ static_assert(db_mgr::CHUNK_SIZE <= ChunkServer::MAX_CHUNK_SIZE, "a database chu
 extern const char INDEX_HTML_START[] asm("_binary_web_index_html_gz_start");
 extern const char INDEX_HTML_END[] asm("_binary_web_index_html_gz_end");
 
-/* The setup page, web/admin.html, built into the firmware the same way. */
-extern const char SETUP_HTML_START[] asm("_binary_web_admin_html_gz_start");
-extern const char SETUP_HTML_END[] asm("_binary_web_admin_html_gz_end");
+/* The setup page, web/setup.html, built into the firmware the same way. */
+extern const char SETUP_HTML_START[] asm("_binary_web_setup_html_gz_start");
+extern const char SETUP_HTML_END[] asm("_binary_web_setup_html_gz_end");
 
 /* The page's icon, web/favicon.ico, built into the firmware the same way. */
 extern const char FAVICON_START[] asm("_binary_web_favicon_ico_start");
@@ -242,7 +242,7 @@ static void handleIndex()
   sendPage(applicationPage);
 }
 
-/* GET /admin/setup/ - the setup page, where the network settings are changed. */
+/* GET /setup/ - the setup page, where the network settings are changed. */
 static void handleSetupPage()
 {
   ActivityLed led;
@@ -250,7 +250,7 @@ static void handleSetupPage()
 }
 
 /*
- * GET /admin/setup - the setup page's address without the final slash. It
+ * GET /setup - the setup page's address without the final slash. It
  * is sent on to the address with the slash, so there is only one address
  * for the page.
  */
@@ -1087,7 +1087,7 @@ void registerWebHandlers(ChunkServer &webServer, db_mgr &db, int cacheKiB, bool 
    * is sent on to the one with it.
    */
   webServer.on(SETUP_PAGE_URL, HTTP_GET, handleSetupPage);
-  webServer.on("/admin/setup", HTTP_GET, handleSetupRedirect);
+  webServer.on("/setup", HTTP_GET, handleSetupRedirect);
   webServer.on(SETTINGS_API_URL, HTTP_GET, handleSettingsGet);
   webServer.on(SETTINGS_API_URL, HTTP_POST, handleSettingsPost);
 

@@ -16,7 +16,7 @@
 /*
  * The WiFi network the board joins at startup: its name (SSID) and its
  * password. These are the defaults, used until other ones are saved on the
- * setup page (/admin/setup/). The ESP32 only supports 2.4 GHz networks.
+ * setup page (/setup/). The ESP32 only supports 2.4 GHz networks.
  */
 static const char WIFI_SSID[] = "your-network";
 static const char WIFI_PASSWORD[] = "your-password";

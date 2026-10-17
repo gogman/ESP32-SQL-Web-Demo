@@ -1,12 +1,12 @@
-# SQLite_Web: how it works
+# SQLite Web Demo: How it Works
 
-SQLite_Web is firmware for an ESP32 board that serves a small web application. The application searches a SQLite database of baby names stored on the board's own flash memory and shows the results in a browser, 25 rows at a time by default.
+SQLite Web Demo is firmware for an ESP32 board that serves a small web application. The application searches a SQLite database of baby names stored on the board's own flash memory and shows the results in a browser, 25 rows at a time by default.
 
 This document describes how the program is put together, how the web page works, how to build, test and diagnose it, what is known to be wrong or fragile, and what could be improved next. It reflects the state of the project on 16 October 2026.
 
 ## Purpose
 
-SQLite_Web is a read-only demonstration. The board never changes its data, and it is meant for a trusted network. Three choices in the design follow from that:
+SQLite Web Demo is a read-only demonstration of what can be done on an ESP32 micro-controller. The board never changes its data, and it is meant for a trusted network. Three choices in the design follow from that:
 
 - The database is opened read-only, so a power loss cannot damage it and answers can be cached for as long as the database version stays the same.
 - There is no login and no encryption. This includes the setup page, where the network settings are changed; it is not password protected for now.
@@ -24,7 +24,7 @@ If the board is ever asked to write data, or is exposed to people who are not tr
 | Data | One table, `gendered_names`, 25,192 rows, 835,584 bytes |
 | Filesystem | LittleFS, 2048 KB partition |
 | Address | `http://esp32-sql.local` (from the host name, which can be changed on the setup page), or the board's IP address |
-| Setup page | `/admin/setup/`: host name, network mode, WiFi network and password, access point name, channel, maximum clients, DNS interval, country and transmit power, all kept in NVS |
+| Setup page | `/setup/`: host name, network mode, WiFi network and password, access point name, channel, maximum clients, DNS interval, country and transmit power, all kept in NVS |
 | Firmware size | Release about 67% and Debug about 72% of the 1920 KB firmware partition |
 | Version control | Git repository in the project folder |
 
@@ -41,13 +41,13 @@ If the board is ever asked to write data, or is exposed to people who are not tr
 | `include/Definitions.h` | All settings |
 | `include/Secrets.h` | WiFi name and passwords; not kept in version control. `Secrets.example.h` is the template |
 | `web/index.html` | The application page, built into the firmware compressed |
-| `web/admin.html` | The setup page (`/admin/setup/`), built into the firmware the same way |
+| `web/setup.html` | The setup page (`/setup/`), built into the firmware the same way |
 | `web/favicon.ico` | The page's icon: the Espressif logo at 16, 32 and 48 pixels, built into the firmware |
-| `web/index.html.gz`, `web/admin.html.gz` | The compressed pages, generated before every build; not in version control |
+| `web/index.html.gz`, `web/setup.html.gz` | The compressed pages, generated before every build; not in version control |
 | `web/bootstrap.min.css` | Bootstrap 5.3.8 with one local change (see below), the stylesheet the page links to. Not uploaded itself; see `tools/pack_css.py` |
 | `data/` | The filesystem image: `babyname.db` and `bootstrap.min.css.gz` |
 | `tools/rebuild_db.py` | Builds `data/babyname.db` from a database in the original layout |
-| `tools/pack_page.py` | Compresses `web/index.html` and `web/admin.html` into `.html.gz` files; PlatformIO runs it before every build |
+| `tools/pack_page.py` | Compresses `web/index.html` and `web/setup.html` into `.html.gz` files; PlatformIO runs it before every build |
 | `tools/pack_css.py` | Compresses `web/bootstrap.min.css` into `data/bootstrap.min.css.gz` |
 | `tools/test_api.py` | Checks the addresses of a running board against the database file |
 | `tools/test_page.py` | Checks the page of a running board in a real browser |
@@ -115,7 +115,7 @@ All addresses accept `GET` only.
 | `/api/status` | The state of the device as JSON |
 | `/bootstrap.min.css` | The Bootstrap stylesheet, gzip-compressed |
 | `/favicon.ico` | The page's icon, shown in the browser tab and in bookmarks |
-| `/admin/setup/` | The setup page; see [The setup page](#the-setup-page). `/admin/setup` without the final slash is sent on to it (301) |
+| `/setup/` | The setup page; see [The setup page](#the-setup-page). `/setup` without the final slash is sent on to it (301) |
 | `/api/settings` | The settings: `GET` reads them, and the choices the page offers, as JSON; `POST` saves them and restarts the board |
 | any other address, access point running | Sent on (302) to `http://192.168.4.1/` when the request names another site; see the captive DNS server under [The setup page](#the-setup-page) |
 | anything else | `404`, or `405` for a method other than `GET` |
@@ -181,7 +181,7 @@ This is the only file the board publishes. The database file is used by the firm
 
 ## The setup page
 
-`/admin/setup/` is a second page, built into the firmware like the application page (`web/admin.html`). Its settings are kept in NVS (the `nvs` partition, namespace `netcfg`), so they survive restarts and firmware and filesystem uploads. It is styled with Bootstrap and has the same header as the application page: the uptime clock (read from `/api/status`, counting on by itself, and started again after a restart) and the theme switcher, which shares its choice with the application page. It is not password protected (see [Purpose](#purpose)).
+`/setup/` is a second page, built into the firmware like the application page (`web/setup.html`). Its settings are kept in NVS (the `nvs` partition, namespace `netcfg`), so they survive restarts and firmware and filesystem uploads. It is styled with Bootstrap and has the same header as the application page: the uptime clock (read from `/api/status`, counting on by itself, and started again after a restart) and the theme switcher, which shares its choice with the application page. It is not password protected (see [Purpose](#purpose)).
 
 The page is static: it holds no values when it is sent. Its script reads them from `GET /api/settings`, together with the lists of countries, transmit power levels and DNS intervals, and fills in the fields. So the page can be compressed and cached like the application page, and it offers exactly the choices the board accepts, from the tables in `src/settings.cpp`.
 
@@ -352,7 +352,7 @@ Because the address always describes the search, results can be bookmarked and s
 
 ### Structure
 
-- **Header.** A coloured bar with the title, the uptime and the theme switcher. A `span` with the id `uptime` shows `...` until the script fills it in from `/api/status`. The switcher is three radio buttons named `theme`, `themeLight`, `themeDark` and `themeAuto`, drawn as a button group of three icons from Bootstrap Icons 1.13.2: `bi-sun` for light, `bi-moon` for dark and `bi-display` for auto. The icons are written into the page as inline SVG, so no icon font or extra file is loaded; they take their colour from the button (`fill='currentColor'`). Each button has a tooltip and a hidden text label for screen readers.
+- **Header.** A coloured bar with the title, a "Setup" button linking to the setup page (`/setup/`), the uptime and the theme switcher. A `span` with the id `uptime` shows `...` until the script fills it in from `/api/status`. The switcher is three radio buttons named `theme`, `themeLight`, `themeDark` and `themeAuto`, drawn as a button group of three icons from Bootstrap Icons 1.13.2: `bi-sun` for light, `bi-moon` for dark and `bi-display` for auto. The icons are written into the page as inline SVG, so no icon font or extra file is loaded; they take their colour from the button (`fill='currentColor'`). Each button has a tooltip and a hidden text label for screen readers.
 - **Problem line.** A red alert box with the id `problem`, hidden unless the board reports that the filesystem is not mounted or the database is not open.
 - **Crash notice.** A yellow alert box with the id `crash`, shown when the board reports a waiting crash dump.
 - **Two forms**, `prefixForm` and `rangeForm`, together in one card, with the primary sex filter (`sex`: All, Male, Female) below them. They still declare method `GET` and action `/`, which is what they would do without the script, but the script handles their submission. The `id` attributes of the fields let the script read them and write the current search back.
@@ -531,7 +531,7 @@ A full run takes about a minute and a half: 30 to 40 s to build and upload, unde
 
 **`tools/test_page.py`** opens the page in Microsoft Edge or Google Chrome, running without a window, and looks at what a person would see. It checks the uptime display (its format, that it counts on by itself, and the conversion into days, hours, minutes and seconds), that the Bootstrap stylesheet is applied, the light and dark theme (Auto following a system setting the browser is told to pretend, both fixed choices, and a choice surviving a reload), that the crash notice matches what the board reports, a search given in the address, paging forward and back against the database, that a repeated page comes from the browser's cache, the first and last buttons, the page numbers and both pagers, sorting the whole search by a column in both directions and across pages and searches, searching from both forms without a reload, an empty result, the back button, and the rows per page with the primary sex filter, including that the page opens at 25 rows again after a reload, and the loading overlay: shown at once by a search and gone when the rows are there, covering the window with its box centred both ways, the darkened background, the text, and its colours in both themes, the page numbers around the current page (5 at either end, 9 in the middle), and that changing the sort or the rows per page keeps the current page. It makes 93 checks. It drives the browser through its remote debugging interface, so nothing has to be installed.
 
-**`tools/test_setup.py`** checks the setup page's address and its redirect, that the page arrives compressed and unpacks to `web/admin.html` and is answered 304 when asked again with its ETag, what `GET /api/settings` returns (the eleven values and the three lists, and never the WiFi password), and that 24 kinds of invalid settings are each refused with the right field named, nothing saved and no restart. In the browser it checks the uptime clock and the theme switcher, that the page shows the saved settings and the board's lists with no template placeholder left, the address as the host name is typed, the channel limit following the country, the open-network box switching the password fields off, and its own checks of the fields. Then it saves a changed host name, channel, client limit, DNS interval, country and transmit power through the page, waits for the restart, checks that they were kept and everything else, including the WiFi password, is unchanged, and saves the original settings back. The mode and the WiFi network are not changed, so the board stays on the same network.
+**`tools/test_setup.py`** checks the setup page's address and its redirect, that the page arrives compressed and unpacks to `web/setup.html` and is answered 304 when asked again with its ETag, what `GET /api/settings` returns (the eleven values and the three lists, and never the WiFi password), and that 24 kinds of invalid settings are each refused with the right field named, nothing saved and no restart. In the browser it checks the uptime clock and the theme switcher, that the page shows the saved settings and the board's lists with no template placeholder left, the address as the host name is typed, the channel limit following the country, the open-network box switching the password fields off, and its own checks of the fields. Then it saves a changed host name, channel, client limit, DNS interval, country and transmit power through the page, waits for the restart, checks that they were kept and everything else, including the WiFi password, is unchanged, and saves the original settings back. The mode and the WiFi network are not changed, so the board stays on the same network.
 
 All three passed in full against the firmware described here, on 16 October 2026; the setup test makes 67 checks, and its save and restore restarted the board in about 6 seconds each.
 

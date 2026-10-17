@@ -18,7 +18,7 @@
 
 /*
  * The board's default host name, used until another one is saved on the
- * setup page (/admin/setup/). The network uses it in lower case, so the
+ * setup page (/setup/). The network uses it in lower case, so the
  * application is reachable at http://esp32-sql.local. See include/settings.h.
  */
 static const char DEFAULT_HOSTNAME[] = "ESP32-SQL";
@@ -128,10 +128,10 @@ static const int DB_DEFAULT_ROWS = 25;
 
 /*
  * The setup page, where the network settings are changed, and the JSON
- * interface it reads and saves them through. web/admin.html calls the
+ * interface it reads and saves them through. web/setup.html calls the
  * same interface address.
  */
-#define SETUP_PAGE_URL "/admin/setup/"
+#define SETUP_PAGE_URL "/setup/"
 #define SETTINGS_API_URL "/api/settings"
 
 /*
