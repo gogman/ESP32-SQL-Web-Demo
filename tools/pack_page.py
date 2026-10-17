@@ -16,8 +16,8 @@ import pathlib
 
 Import("env")  # noqa: F821 - provided by PlatformIO's build system
 
-# The application page and the setup page (/admin/setup/).
-PAGES = ["index.html", "admin.html"]
+# The application page and the setup page (/setup/).
+PAGES = ["index.html", "setup.html"]
 
 WEB = pathlib.Path(env.subst("$PROJECT_DIR")) / "web"  # noqa: F821
 

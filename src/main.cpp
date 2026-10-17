@@ -1,5 +1,5 @@
 /*
- * SQLite_Web - a small web application on an ESP32 that searches a SQLite
+ * ESP32 SQL Web Demo - a small web application on an ESP32 that searches a SQLite
  * database of baby names stored on the board's flash filesystem.
  *
  * This file is only the entry point. It creates the two long-lived objects

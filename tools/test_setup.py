@@ -1,4 +1,4 @@
-"""Checks the setup page (/admin/setup/) and the settings interface (/api/settings).
+"""Checks the setup page (/setup/) and the settings interface (/api/settings).
 
 Usage (from the project folder):
     python tools/test_setup.py [http://address-of-the-board] [--no-restart]
@@ -6,7 +6,7 @@ Usage (from the project folder):
 The default address is http://esp32-sql.local.
 
 It checks the page's address and its redirect, that the page arrives compressed
-and unpacks to web/admin.html, what GET /api/settings returns, that invalid
+and unpacks to web/setup.html, what GET /api/settings returns, that invalid
 settings are refused field by field without anything being saved, and the page
 in a real browser (Microsoft Edge or Google Chrome, without a window): that it
 shows the saved settings and the board's lists, and its own checks of the
@@ -122,15 +122,15 @@ def main():
 
     # --- Addresses -----------------------------------------------------------
     print("\nAddresses")
-    status, headers, _ = request(base, "/admin/setup")
-    check(status == 301 and headers.get("Location") == "/admin/setup/", "/admin/setup is sent on to /admin/setup/ (%d)" % status)
+    status, headers, _ = request(base, "/setup")
+    check(status == 301 and headers.get("Location") == "/setup/", "/setup is sent on to /setup/ (%d)" % status)
 
-    status, headers, body = request(base, "/admin/setup/")
-    with open(os.path.join(PROJECT, "web", "admin.html"), "rb") as file:
+    status, headers, body = request(base, "/setup/")
+    with open(os.path.join(PROJECT, "web", "setup.html"), "rb") as file:
         source = file.read()
     check(status == 200 and headers.get("Content-Encoding") == "gzip" and gzip.decompress(body) == source,
-          "/admin/setup/ is web/admin.html, gzip-compressed (%d bytes)" % len(body))
-    status, _, _ = request(base, "/admin/setup/", headers={"If-None-Match": headers.get("ETag", "")})
+          "/setup/ is web/setup.html, gzip-compressed (%d bytes)" % len(body))
+    status, _, _ = request(base, "/setup/", headers={"If-None-Match": headers.get("ETag", "")})
     check(status == 304, "asked again with its ETag, it is answered 304 Not Modified")
 
     # --- Reading the settings -------------------------------------------------
@@ -202,7 +202,7 @@ def main():
     ids = ["hostname", "sta_ssid", "sta_pass", "sta_pass_confirm", "ap_ssid", "wifi_channel", "max_clients", "dns_interval", "country", "tx_power"]
     browser = Browser(executable)
     try:
-        browser.open(base + "/admin/setup/")
+        browser.open(base + "/setup/")
         check(browser.wait_for("!document.getElementById('hostname').disabled"), "the form is filled in and enabled")
         values = browser.run("%s.map(function (id) { return document.getElementById(id).value; })" % json.dumps(ids))
         check(values == [saved["hostname"], saved["sta_ssid"], "", "", saved["ap_ssid"], str(saved["wifi_channel"]),
@@ -276,7 +276,7 @@ def main():
         # --- Saving through the page -----------------------------------------
         print("\nSaving through the page")
         changed = {"hostname": "ESP32-SQL-Test", "wifi_channel": "6", "max_clients": "3", "dns_interval": "25", "country": "CA", "tx_power": "60"}
-        browser.open(base + "/admin/setup/")
+        browser.open(base + "/setup/")
         browser.wait_for("!document.getElementById('hostname').disabled")
         browser.run("var values = %s; Object.keys(values).forEach(function (id) { document.getElementById(id).value = values[id]; });"
                     "document.getElementById('setup').requestSubmit()" % json.dumps(changed))

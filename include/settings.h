@@ -1,5 +1,5 @@
 /*
- * The settings a user can change on the setup page (/admin/setup/), kept in
+ * The settings a user can change on the setup page (/setup/), kept in
  * the ESP32's non-volatile storage (NVS) so they survive restarts and
  * firmware updates. The implementation is in src/settings.cpp.
  */

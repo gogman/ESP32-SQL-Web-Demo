@@ -392,6 +392,9 @@ def main():
         check(browser.wait_for("getComputedStyle(document.documentElement).getPropertyValue('--bs-blue').trim() != ''"),
               "the Bootstrap stylesheet is applied")
         check(browser.run("document.getElementById('results').hidden"), "no results area without a search")
+        setup_link = browser.run("(function () { var a = document.querySelector('header a[href=\"/setup/\"]');"
+                                 " return a && a.nextElementSibling.textContent.indexOf('Uptime') == 0 ? a.textContent : null; })()")
+        check(setup_link == "Setup", "a 'Setup' link to /setup/ sits to the left of the uptime")
         check(browser.run("document.getElementById('problem').hidden"), "no problem is reported")
 
         # --- Light and dark theme ------------------------------------------------
