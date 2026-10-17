@@ -1,12 +1,12 @@
-# SQLite Web Demo: How it Works
+# ESP32 SQL Web Demo: How it Works
 
-SQLite Web Demo is firmware for an ESP32 board that serves a small web application. The application searches a SQLite database of baby names stored on the board's own flash memory and shows the results in a browser, 25 rows at a time by default.
+ESP32 SQL Web Demo is firmware for an ESP32 board that serves a small web application. The application searches a SQLite database of baby names stored on the board's own flash memory and shows the results in a browser, 25 rows at a time by default.
 
 This document describes how the program is put together, how the web page works, how to build, test and diagnose it, what is known to be wrong or fragile, and what could be improved next. It reflects the state of the project on 16 October 2026.
 
 ## Purpose
 
-SQLite Web Demo is a read-only demonstration of what can be done on an ESP32 micro-controller. The board never changes its data, and it is meant for a trusted network. Three choices in the design follow from that:
+ESP32 SQL Web Demo is a read-only demonstration of what can be done on an ESP32 micro-controller. The board never changes its data, and it is meant for a trusted network. Three choices in the design follow from that:
 
 - The database is opened read-only, so a power loss cannot damage it and answers can be cached for as long as the database version stays the same.
 - There is no login and no encryption. This includes the setup page, where the network settings are changed; it is not password protected for now.
