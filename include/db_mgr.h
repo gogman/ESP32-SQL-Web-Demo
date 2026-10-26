@@ -46,9 +46,8 @@ public:
     using ChunkSink = std::function<void(const char *data, size_t length)>;
 
     /*
-     * The size of the output buffer, and so the largest piece a ChunkSink
-     * ever receives. 1400 bytes plus the web server's chunk framing still
-     * fit in one TCP packet (see ChunkServer::MAX_CHUNK_SIZE).
+    * The size of the output buffer, and so the largest piece a ChunkSink
+    * ever receives.
      */
     static const size_t CHUNK_SIZE = 1400;
 

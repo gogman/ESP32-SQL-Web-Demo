@@ -3,9 +3,8 @@
  *
  * registerWebHandlers() at the bottom of this file is the only function
  * visible from outside; it connects each address to one of the handler
- * functions above it. A handler takes no arguments and returns nothing: it
- * reads the request from the server object and sends the response through
- * it.
+ * functions above it. Each handler receives its request and sends the
+ * response through it.
  *
  * All addresses accept GET requests only, except the settings interface,
  * which is also written to with POST.
@@ -20,15 +19,6 @@
 #include "Definitions.h"
 #include "network.h"
 #include "settings.h"
-
-/*
- * The database hands its output over in pieces of up to db_mgr::CHUNK_SIZE
- * bytes, and each piece is sent with ChunkServer::sendChunk(), which packs
- * at most MAX_CHUNK_SIZE bytes into one packet. If the first number ever
- * grew beyond the second, sending would silently fall back to the slow
- * path. This check turns that into a compile error instead.
- */
-static_assert(db_mgr::CHUNK_SIZE <= ChunkServer::MAX_CHUNK_SIZE, "a database chunk must fit in one write");
 
 /*
  * The application page, web/index.html, gzip-compressed.
@@ -94,11 +84,8 @@ static EmbeddedPage setupPage = {SETUP_HTML_START, SETUP_HTML_END, ""};
 static const char HIGHEST_CHARACTER[] = "\xF4\x8F\xBF\xBF";
 
 /*
- * What the handlers work with. The web server calls a handler as a plain
- * function with no arguments, so there is no way to pass these in; they are
- * stored here by registerWebHandlers() instead.
+ * The data shared by the request handlers.
  */
-static ChunkServer *server;
 static db_mgr *database;
 static int databaseCacheKiB;
 static bool filesystemMounted;
@@ -129,18 +116,46 @@ static bool crashDumpWaiting;
 static char crashTask[16] = "";
 static uint32_t crashAddress;
 
-/*
- * Switches the LED on for as long as a request is being answered.
- *
- * A handler creates one of these as its first statement. The constructor
- * turns the LED on; the destructor turns it off when the handler returns,
- * including through any of its early "return" statements.
- */
-struct ActivityLed
+// ---------------------------------------------------------------------------------------------------------------
+// Request activity LED
+//
+// Middleware runs when a request arrives, before its response is sent, so switching the LED off there would make
+// the blink last microseconds. Instead the middleware switches it on and records the time, and serviceActivityLed()
+// on the loop task switches it off REQUEST_LED_BLINK_MS later. The variables are shared between the web server
+// task and the loop task, hence volatile.
+// ---------------------------------------------------------------------------------------------------------------
+
+static volatile uint32_t ledOnAt = 0;
+static volatile bool ledOn = false;
+
+class ActivityLedMiddleware : public AsyncMiddleware
 {
-  ActivityLed() { digitalWrite(LED_PIN, 1); }
-  ~ActivityLed() { digitalWrite(LED_PIN, 0); }
+public:
+  ActivityLedMiddleware()
+  {
+    pinMode(REQUEST_LED_PIN, OUTPUT);
+    digitalWrite(REQUEST_LED_PIN, LOW);
+  }
+
+  // Called for every request. next() hands the request on to the rest of the chain; leaving it out would stop
+  // the request here, which is how the authentication middleware turns away a wrong login.
+  void run(AsyncWebServerRequest *request, ArMiddlewareNext next) override
+  {
+    ledOnAt = millis();
+    ledOn = true;
+    digitalWrite(REQUEST_LED_PIN, HIGH);
+    next();
+  }
 };
+
+void serviceActivityLed()
+{
+  if (ledOn && millis() - ledOnAt >= REQUEST_LED_BLINK_MS)
+  {
+    ledOn = false;
+    digitalWrite(REQUEST_LED_PIN, LOW);
+  }
+}
 
 /*
  * Copies text into a buffer in a form that can be placed between the double
@@ -167,7 +182,7 @@ static void copyJsonSafe(char *out, size_t size, const char *text)
  * Sends an error as a small JSON document, {"error":"<message>"}, with the
  * given HTTP status code (400 for a bad request, 500 for a server failure).
  */
-static void sendJsonError(int code, const char *message)
+static void sendJsonError(AsyncWebServerRequest *request, int code, const char *message)
 {
   char safe[120];
   copyJsonSafe(safe, sizeof(safe), message);
@@ -176,8 +191,9 @@ static void sendJsonError(int code, const char *message)
   snprintf(body, sizeof(body), "{\"error\":\"%s\"}", safe);
 
   /* An error describes this moment only; the browser must not store and reuse it. */
-  server->sendHeader("Cache-Control", "no-store");
-  server->send(code, "application/json", body);
+  AsyncWebServerResponse *response = request->beginResponse(code, "application/json", body);
+  response->addHeader("Cache-Control", "no-store");
+  request->send(response);
 }
 
 /*
@@ -211,15 +227,14 @@ static void makeEtag(EmbeddedPage &page)
  * that still equals the label of the page in this firmware, the answer is a
  * bodiless "304 Not Modified" and the browser uses its copy.
  */
-static void sendPage(const EmbeddedPage &page)
+static void sendPage(AsyncWebServerRequest *request, const EmbeddedPage &page)
 {
-  /* Both headers go out with either answer, the full page and the 304. */
-  server->sendHeader("ETag", page.etag);
-  server->sendHeader("Cache-Control", "no-cache");
-
-  if (server->header("If-None-Match") == page.etag)
+  if (request->header("If-None-Match") == page.etag)
   {
-    server->send(304, "text/html", "");
+    AsyncWebServerResponse *response = request->beginResponse(304, "text/html", "");
+    response->addHeader("ETag", page.etag);
+    response->addHeader("Cache-Control", "no-cache");
+    request->send(response);
     return;
   }
 
@@ -231,22 +246,24 @@ static void sendPage(const EmbeddedPage &page)
    * the distance between the two linker symbols, the same length the ETag
    * was computed over.
    */
-  server->sendHeader("Content-Encoding", "gzip");
-  server->send_P(200, "text/html", page.start, page.end - page.start);
+  AsyncWebServerResponse *response = request->beginResponse(200, "text/html",
+                                                            reinterpret_cast<const uint8_t *>(page.start), page.end - page.start);
+  response->addHeader("ETag", page.etag);
+  response->addHeader("Cache-Control", "no-cache");
+  response->addHeader("Content-Encoding", "gzip");
+  request->send(response);
 }
 
 /* GET / and GET /query_db - the application page. */
-static void handleIndex()
+static void handleIndex(AsyncWebServerRequest *request)
 {
-  ActivityLed led;
-  sendPage(applicationPage);
+  sendPage(request, applicationPage);
 }
 
 /* GET /setup/ - the setup page, where the network settings are changed. */
-static void handleSetupPage()
+static void handleSetupPage(AsyncWebServerRequest *request)
 {
-  ActivityLed led;
-  sendPage(setupPage);
+  sendPage(request, setupPage);
 }
 
 /*
@@ -254,11 +271,9 @@ static void handleSetupPage()
  * is sent on to the address with the slash, so there is only one address
  * for the page.
  */
-static void handleSetupRedirect()
+static void handleSetupRedirect(AsyncWebServerRequest *request)
 {
-  ActivityLed led;
-  server->sendHeader("Location", SETUP_PAGE_URL);
-  server->send(301, "text/plain", "");
+  request->redirect(SETUP_PAGE_URL, 301);
 }
 
 /*
@@ -272,33 +287,33 @@ static void handleSetupRedirect()
  * Returns true when the request is valid. Otherwise it is answered with a
  * 400 error here, false is returned, and the caller has nothing left to do.
  */
-static bool readRange(String &from, String &to, String &sex)
+static bool readRange(AsyncWebServerRequest *request, String &from, String &to, String &sex)
 {
-  sex = server->arg("sex");
+  sex = request->arg("sex");
   sex.toUpperCase();
 
   if (sex != "" && sex != "M" && sex != "F")
   {
-    sendJsonError(400, "sex must be M, F or empty");
+    sendJsonError(request, 400, "sex must be M, F or empty");
     return false;
   }
 
-  if (server->hasArg("startswith"))
+  if (request->hasArg("startswith"))
   {
     /* "Starts with" becomes a range; see HIGHEST_CHARACTER. */
-    from = server->arg("startswith");
+    from = request->arg("startswith");
     to = from + HIGHEST_CHARACTER;
     return true;
   }
 
-  if (server->hasArg("from") && server->hasArg("to"))
+  if (request->hasArg("from") && request->hasArg("to"))
   {
-    from = server->arg("from");
-    to = server->arg("to");
+    from = request->arg("from");
+    to = request->arg("to");
     return true;
   }
 
-  sendJsonError(400, "Give either startswith, or from and to");
+  sendJsonError(request, 400, "Give either startswith, or from and to");
   return false;
 }
 
@@ -312,9 +327,9 @@ static bool readRange(String &from, String &to, String &sex)
  * that to the user's own browser. Without the version there is no such
  * guarantee, and the browser has to ask again each time.
  */
-static const char *dataCacheControl()
+static const char *dataCacheControl(AsyncWebServerRequest *request)
 {
-  return server->hasArg("v") ? "private, max-age=86400" : "no-cache";
+  return request->hasArg("v") ? "private, max-age=86400" : "no-cache";
 }
 
 /*
@@ -349,10 +364,8 @@ static const char *dataCacheControl()
  * that does not exist, gets 400, a database failure 500, both with a {"error": ...}
  * document.
  */
-static void handleNamesApi()
+static void handleNamesApi(AsyncWebServerRequest *request)
 {
-  ActivityLed led;
-
   const unsigned long responseStart = micros();
 
   /*
@@ -365,20 +378,20 @@ static void handleNamesApi()
   String to;
   String sex;
 
-  if (!readRange(from, to, sex))
+  if (!readRange(request, from, to, sex))
     return;
 
   /*
    * Rows per page. toInt() gives 0 for anything that is not a number,
    * which the range check then refuses.
    */
-  const int limit = server->hasArg("limit") ? server->arg("limit").toInt() : DB_DEFAULT_ROWS;
+  const int limit = request->hasArg("limit") ? request->arg("limit").toInt() : DB_DEFAULT_ROWS;
 
   if (limit < 1 || limit > DB_PAGE_ROWS)
   {
     char message[48];
     snprintf(message, sizeof(message), "limit must be from 1 to %d", DB_PAGE_ROWS);
-    sendJsonError(400, message);
+    sendJsonError(request, 400, message);
     return;
   }
 
@@ -387,33 +400,33 @@ static void handleNamesApi()
    * the query. Whether a cursor was given at all is decided by the presence
    * of after_name; without it, the first page is asked for.
    */
-  const String afterName = server->arg("after_name");
-  const String afterState = server->arg("after_state");
-  const db_mgr::Cursor after = {afterName.c_str(), server->arg("after_year").toDouble(), afterState.c_str()};
+  const String afterName = request->arg("after_name");
+  const String afterState = request->arg("after_state");
+  const db_mgr::Cursor after = {afterName.c_str(), request->arg("after_year").toDouble(), afterState.c_str()};
   /*
    * The sort order, if one was asked for. The column must be a single digit
    * within range; anything else is refused rather than guessed at.
    */
-  const bool hasSort = server->hasArg("sort");
-  const String sortArg = server->arg("sort");
+  const bool hasSort = request->hasArg("sort");
+  const String sortArg = request->arg("sort");
   const int sortColumn = sortArg.length() == 1 ? sortArg[0] - '0' : -1;
-  const bool descending = server->arg("desc") == "1";
+  const bool descending = request->arg("desc") == "1";
 
   if (hasSort && (sortColumn < 0 || sortColumn >= db_mgr::COLUMN_COUNT))
   {
-    sendJsonError(400, "sort must be a column number from 0 to 6");
+    sendJsonError(request, 400, "sort must be a column number from 0 to 6");
     return;
   }
 
   /* A cursor only means something in the default order, so sorting switches it off. */
-  const bool hasCursor = !hasSort && server->hasArg("after_name");
+  const bool hasCursor = !hasSort && request->hasArg("after_name");
 
   /*
    * The alternative to a cursor: the position of the page in the range.
    * A cursor wins when both are given, because it is the cheaper way.
    */
-  const bool hasOffset = !hasCursor && server->hasArg("offset");
-  const long offset = server->arg("offset").toInt();
+  const bool hasOffset = !hasCursor && request->hasArg("offset");
+  const long offset = request->arg("offset").toInt();
 
   /*
    * Measurements for the timing log. The time spent sending is added up
@@ -422,6 +435,9 @@ static void handleNamesApi()
   unsigned long sendMicros = 0;
   size_t bytes = 0;
   unsigned int chunks = 0;
+
+  AsyncResponseStream *response = request->beginResponseStream("application/json");
+  response->addHeader("Cache-Control", dataCacheControl(request));
 
   const unsigned long pageStart = micros();
 
@@ -432,31 +448,15 @@ static void handleNamesApi()
    * every buffer-full of JSON the database produces.
    */
   const db_mgr::ChunkSink sendPiece = [&](const char *data, size_t length)
-                                  {
-                                    const unsigned long sendStart = micros();
+  {
+    const unsigned long sendStart = micros();
 
-                                    /*
-                                     * The HTTP status line and headers are sent here, with the first
-                                     * piece of data, and not before the query starts. If the query
-                                     * fails before producing anything, nothing has been sent yet and
-                                     * the handler can still answer with a 500 status below.
-                                     *
-                                     * CONTENT_LENGTH_UNKNOWN switches the response to chunked
-                                     * encoding: the total size is not known in advance, and the
-                                     * document is sent piece by piece without ever being held in
-                                     * memory as a whole. The empty body in send() means "headers only".
-                                     */
-                                    if (chunks == 0)
-                                    {
-                                      server->sendHeader("Cache-Control", dataCacheControl());
-                                      server->setContentLength(CONTENT_LENGTH_UNKNOWN);
-                                      server->send(200, "application/json", "");
-                                    }
-
-                                    server->sendChunk(data, length);
-                                    sendMicros += micros() - sendStart;
-                                    bytes += length;
-                                    chunks++; };
+    /* The response stream owns a copy before the database reuses its buffer. */
+    response->write(reinterpret_cast<const uint8_t *>(data), length);
+    sendMicros += micros() - sendStart;
+    bytes += length;
+    chunks++;
+  };
 
   /* Sorted if asked for; else by position if one was given; otherwise by cursor (or the first page). */
   const bool result = hasSort
@@ -473,9 +473,12 @@ static void handleNamesApi()
    * output, and the failure becomes a regular error response.
    */
   if (chunks > 0)
-    server->endChunks();
+    request->send(response);
   else
-    sendJsonError(500, database->lastError());
+  {
+    delete response;
+    sendJsonError(request, 500, database->lastError());
+  }
 
   if (SERIAL_LOG)
   {
@@ -486,10 +489,10 @@ static void handleNamesApi()
      * the query and writing the rows as JSON.
      */
     LOG_PRINTF("Names '%s'..'%s' after '%s' offset %ld sort %d%s %s: database %.2f ms, sending %.2f ms (%u bytes in %u chunks), whole response %.2f ms\n",
-                  from.c_str(), server->hasArg("startswith") ? "(startswith)" : to.c_str(), afterName.c_str(),
-                  hasOffset ? offset : 0L, hasSort ? sortColumn : -1, descending ? " desc" : "", result ? "ok" : database->lastError(),
-                  (pageMicros - sendMicros) / 1000.0, sendMicros / 1000.0, (unsigned)bytes, chunks,
-                  (micros() - responseStart) / 1000.0);
+               from.c_str(), request->hasArg("startswith") ? "(startswith)" : to.c_str(), afterName.c_str(),
+               hasOffset ? offset : 0L, hasSort ? sortColumn : -1, descending ? " desc" : "", result ? "ok" : database->lastError(),
+               (pageMicros - sendMicros) / 1000.0, sendMicros / 1000.0, (unsigned)bytes, chunks,
+               (micros() - responseStart) / 1000.0);
   }
 }
 
@@ -502,15 +505,13 @@ static void handleNamesApi()
  * because counting reads the whole range: doing it once per search is cheap,
  * doing it for every page would not be.
  */
-static void handleCountApi()
+static void handleCountApi(AsyncWebServerRequest *request)
 {
-  ActivityLed led;
-
   String from;
   String to;
   String sex;
 
-  if (!readRange(from, to, sex))
+  if (!readRange(request, from, to, sex))
     return;
 
   const unsigned long countStart = micros();
@@ -518,21 +519,22 @@ static void handleCountApi()
 
   if (count < 0)
   {
-    sendJsonError(500, database->lastError());
+    sendJsonError(request, 500, database->lastError());
     return;
   }
 
   char body[32];
   snprintf(body, sizeof(body), "{\"count\":%ld}", count);
 
-  server->sendHeader("Cache-Control", dataCacheControl());
-  server->send(200, "application/json", body);
+  AsyncWebServerResponse *response = request->beginResponse(200, "application/json", body);
+  response->addHeader("Cache-Control", dataCacheControl(request));
+  request->send(response);
 
   if (SERIAL_LOG)
   {
     LOG_PRINTF("Count '%s'..'%s': %ld rows, whole response %.2f ms\n",
-                  from.c_str(), server->hasArg("startswith") ? "(startswith)" : to.c_str(), count,
-                  (micros() - countStart) / 1000.0);
+               from.c_str(), request->hasArg("startswith") ? "(startswith)" : to.c_str(), count,
+               (micros() - countStart) / 1000.0);
   }
 }
 
@@ -545,10 +547,8 @@ static void handleCountApi()
  * crash was recorded. The rest is for diagnosis: which firmware build is
  * running, how the board is connected, and how much memory is free.
  */
-static void handleStatusApi()
+static void handleStatusApi(AsyncWebServerRequest *request)
 {
-  ActivityLed led;
-
   /* In access point mode the board's own address is the access point's, not a station address. */
   const bool accessPoint = WiFi.getMode() == WIFI_AP;
   const String ip = (accessPoint ? WiFi.softAPIP() : WiFi.localIP()).toString();
@@ -580,8 +580,9 @@ static void handleStatusApi()
            (unsigned)ESP.getFlashChipSize());
 
   /* The status changes every second, so it must never come from a cache. */
-  server->sendHeader("Cache-Control", "no-store");
-  server->send(200, "application/json", body);
+  AsyncWebServerResponse *response = request->beginResponse(200, "application/json", body);
+  response->addHeader("Cache-Control", "no-store");
+  request->send(response);
 }
 
 /*
@@ -681,10 +682,8 @@ static bool appendChoices(char *&out, const char *end, const char *name, const V
  * empty fields keep the saved password. The lists come from the tables in
  * settings.cpp, so the page offers exactly what the board accepts.
  */
-static void handleSettingsGet()
+static void handleSettingsGet(AsyncWebServerRequest *request)
 {
-  ActivityLed led;
-
   char name[HOSTNAME_MAX + 1];
   networkName(settings.hostname, name, sizeof(name));
 
@@ -722,25 +721,27 @@ static void handleSettingsGet()
 
   if (!ok)
   {
-    sendJsonError(500, "The settings do not fit in the answer");
+    sendJsonError(request, 500, "The settings do not fit in the answer");
     return;
   }
 
   /* Settings change; the page must always show the saved ones. */
-  server->sendHeader("Cache-Control", "no-store");
-  server->send(200, "application/json", body);
+  AsyncWebServerResponse *response = request->beginResponse(200, "application/json", body);
+  response->addHeader("Cache-Control", "no-store");
+  request->send(response);
 }
 
 /*
  * Sends a 400 answer about one field of the settings:
  * {"error":"<message>","field":"<field>"}. The page marks that field.
  */
-static void sendSettingsError(const char *message, const char *field)
+static void sendSettingsError(AsyncWebServerRequest *request, const char *message, const char *field)
 {
   char body[240];
   snprintf(body, sizeof(body), "{\"error\":\"%s\",\"field\":\"%s\"}", message, field);
-  server->sendHeader("Cache-Control", "no-store");
-  server->send(400, "application/json", body);
+  AsyncWebServerResponse *response = request->beginResponse(400, "application/json", body);
+  response->addHeader("Cache-Control", "no-store");
+  request->send(response);
 }
 
 /*
@@ -748,13 +749,13 @@ static void sendSettingsError(const char *message, const char *field)
  * answering with a 400 error, if the value is longer than the array holds;
  * cutting it short silently would save something the user did not type.
  */
-static bool readField(const char *field, char *out, size_t size, const char *tooLong)
+static bool readField(AsyncWebServerRequest *request, const char *field, char *out, size_t size, const char *tooLong)
 {
-  const String value = server->arg(field);
+  const String value = request->arg(field);
 
   if (value.length() >= size)
   {
-    sendSettingsError(tooLong, field);
+    sendSettingsError(request, tooLong, field);
     return false;
   }
 
@@ -770,9 +771,9 @@ static const long NOT_A_NUMBER = LONG_MIN;
  * for a negative one (the weakest transmit power is -4). Anything else
  * (empty, "12abc", "1.5", too long) gives NOT_A_NUMBER.
  */
-static long readNumber(const char *field)
+static long readNumber(AsyncWebServerRequest *request, const char *field)
 {
-  const String value = server->arg(field);
+  const String value = request->arg(field);
   const size_t first = value.startsWith("-") ? 1 : 0;
 
   if (value.length() <= first || value.length() > 5)
@@ -812,25 +813,23 @@ static long readNumber(const char *field)
  * {"saved":true,"restarting":true,"network_name":"..."}, and the board
  * restarts RESTART_DELAY_MS later; see restartSoon().
  */
-static void handleSettingsPost()
+static void handleSettingsPost(AsyncWebServerRequest *request)
 {
-  ActivityLed led;
-
   Settings candidate = settings;
-  const String mode = server->arg("mode");
+  const String mode = request->arg("mode");
 
   if (mode != "sta" && mode != "ap")
   {
-    sendSettingsError("Choose a network mode", "mode");
+    sendSettingsError(request, "Choose a network mode", "mode");
     return;
   }
 
   candidate.accessPointMode = mode == "ap";
 
-  if (!readField("hostname", candidate.hostname, sizeof(candidate.hostname), "The host name must be 1 to 32 letters, digits and hyphens") ||
-      !readField("sta_ssid", candidate.staSsid, sizeof(candidate.staSsid), "The WiFi network name must be 1 to 32 bytes long") ||
-      !readField("ap_ssid", candidate.apSsid, sizeof(candidate.apSsid), "The access point name must be 1 to 32 bytes long") ||
-      !readField("country", candidate.country, sizeof(candidate.country), "Choose a country from the list"))
+  if (!readField(request, "hostname", candidate.hostname, sizeof(candidate.hostname), "The host name must be 1 to 32 letters, digits and hyphens") ||
+      !readField(request, "sta_ssid", candidate.staSsid, sizeof(candidate.staSsid), "The WiFi network name must be 1 to 32 bytes long") ||
+      !readField(request, "ap_ssid", candidate.apSsid, sizeof(candidate.apSsid), "The access point name must be 1 to 32 bytes long") ||
+      !readField(request, "country", candidate.country, sizeof(candidate.country), "Choose a country from the list"))
     return;
 
   /*
@@ -839,24 +838,24 @@ static void handleSettingsPost()
    * empty fields keep it; but if no password is saved, that would quietly
    * turn the network into an open one, so a password is asked for instead.
    */
-  const String password = server->arg("sta_pass");
+  const String password = request->arg("sta_pass");
 
-  if (server->arg("sta_open") == "1")
+  if (request->arg("sta_open") == "1")
     candidate.staPassword[0] = '\0';
   else if (password.length() > 0)
   {
-    if (password != server->arg("sta_pass_confirm"))
+    if (password != request->arg("sta_pass_confirm"))
     {
-      sendSettingsError("The passwords don't match", "sta_pass_confirm");
+      sendSettingsError(request, "The passwords don't match", "sta_pass_confirm");
       return;
     }
 
-    if (!readField("sta_pass", candidate.staPassword, sizeof(candidate.staPassword), "The WiFi password must be 8 to 63 characters long"))
+    if (!readField(request, "sta_pass", candidate.staPassword, sizeof(candidate.staPassword), "The WiFi password must be 8 to 63 characters long"))
       return;
   }
   else if (!candidate.accessPointMode && candidate.staPassword[0] == '\0')
   {
-    sendSettingsError("Enter the network's password, or tick Open network", "sta_pass");
+    sendSettingsError(request, "Enter the network's password, or tick Open network", "sta_pass");
     return;
   }
 
@@ -866,10 +865,10 @@ static void handleSettingsPost()
    * that check refuses (0, or 65535 for the DNS interval), so it cannot wrap
    * around into a valid one.
    */
-  const long channel = readNumber("wifi_channel");
-  const long maxClients = readNumber("max_clients");
-  const long dnsInterval = readNumber("dns_interval");
-  const long txPower = readNumber("tx_power");
+  const long channel = readNumber(request, "wifi_channel");
+  const long maxClients = readNumber(request, "max_clients");
+  const long dnsInterval = readNumber(request, "dns_interval");
+  const long txPower = readNumber(request, "tx_power");
 
   candidate.channel = channel >= 0 && channel <= 255 ? channel : 0;
   candidate.maxClients = maxClients >= 0 && maxClients <= 255 ? maxClients : 0;
@@ -881,13 +880,13 @@ static void handleSettingsPost()
 
   if (problem)
   {
-    sendSettingsError(problem, field);
+    sendSettingsError(request, problem, field);
     return;
   }
 
   if (!saveSettings(candidate))
   {
-    sendJsonError(500, "The settings could not be saved");
+    sendJsonError(request, 500, "The settings could not be saved");
     return;
   }
 
@@ -896,8 +895,9 @@ static void handleSettingsPost()
 
   char body[120];
   snprintf(body, sizeof(body), "{\"saved\":true,\"restarting\":true,\"network_name\":\"%s\"}", name);
-  server->sendHeader("Cache-Control", "no-store");
-  server->send(200, "application/json", body);
+  AsyncWebServerResponse *response = request->beginResponse(200, "application/json", body);
+  response->addHeader("Cache-Control", "no-store");
+  request->send(response);
 
   LOG_PRINTLN("New settings saved");
   restartSoon();
@@ -910,17 +910,16 @@ static void handleSettingsPost()
  * 232 KB) and is sent exactly as stored; the browser unpacks it. Every
  * browser accepts gzip, so no uncompressed copy is kept.
  */
-static void handleCss()
+static void handleCss(AsyncWebServerRequest *request)
 {
-  ActivityLed led;
-
   /* Without a mounted filesystem there is no stylesheet; the page then shows unstyled. */
   File file = filesystemMounted && LittleFS.exists(CSS_FILE) ? LittleFS.open(CSS_FILE) : File();
 
   if (!file)
   {
-    server->sendHeader("Cache-Control", "no-store");
-    server->send(404, "text/plain", "The stylesheet is not on the filesystem\n");
+    AsyncWebServerResponse *response = request->beginResponse(404, "text/plain", "The stylesheet is not on the filesystem\n");
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
     return;
   }
 
@@ -933,8 +932,9 @@ static void handleCss()
    * the file's name ends in ".gz", it also adds "Content-Encoding: gzip",
    * which is what tells the browser to unpack it.
    */
-  server->sendHeader("Cache-Control", "public, max-age=31536000, immutable");
-  server->streamFile(file, "text/css");
+  AsyncWebServerResponse *response = request->beginResponse(file, String(CSS_URL), "text/css");
+  response->addHeader("Cache-Control", "public, max-age=31536000, immutable");
+  request->send(response);
 }
 
 /*
@@ -945,12 +945,12 @@ static void handleCss()
  * time to time. It never changes between firmware versions in practice,
  * so the browser may keep it for a week without asking.
  */
-static void handleFavicon()
+static void handleFavicon(AsyncWebServerRequest *request)
 {
-  ActivityLed led;
-
-  server->sendHeader("Cache-Control", "public, max-age=604800");
-  server->send_P(200, "image/x-icon", FAVICON_START, FAVICON_END - FAVICON_START);
+  AsyncWebServerResponse *response = request->beginResponse(200, "image/x-icon",
+                                                            reinterpret_cast<const uint8_t *>(FAVICON_START), FAVICON_END - FAVICON_START);
+  response->addHeader("Cache-Control", "public, max-age=604800");
+  request->send(response);
 }
 
 /*
@@ -970,32 +970,32 @@ static void handleFavicon()
  *    prompt with the page in it.
  * 3. Everything else, which is a plain "404 Not Found".
  */
-static void handleOther()
+static void handleOther(AsyncWebServerRequest *request)
 {
-  ActivityLed led;
-
-  if (server->method() != HTTP_GET)
+  if (request->method() != HTTP_GET)
   {
-    server->sendHeader("Allow", "GET");
-    server->send(405, "text/plain", "Method Not Allowed\n");
+    AsyncWebServerResponse *response = request->beginResponse(405, "text/plain", "Method Not Allowed\n");
+    response->addHeader("Allow", "GET");
+    request->send(response);
     return;
   }
 
   if (WiFi.getMode() & WIFI_AP)
   {
     const String apAddress = WiFi.softAPIP().toString();
-    const String host = server->hostHeader();
+    const String host = request->host();
 
     if (host != apAddress && !host.endsWith(".local"))
     {
-      server->sendHeader("Location", "http://" + apAddress + "/");
-      server->sendHeader("Cache-Control", "no-store");
-      server->send(302, "text/plain", "");
+      AsyncWebServerResponse *response = request->beginResponse(302, "text/plain", "");
+      response->addHeader("Location", "http://" + apAddress + "/");
+      response->addHeader("Cache-Control", "no-store");
+      request->send(response);
       return;
     }
   }
 
-  const String uri = server->uri();
+  const String uri = request->url();
 
   /*
    * Build the 404 text. reserve() sizes the String once for the fixed words
@@ -1007,16 +1007,19 @@ static void handleOther()
   message += uri;
   message += "\n";
 
-  server->send(404, "text/plain", message);
+  request->send(404, "text/plain", message);
 }
 
 /*
  * Connects the addresses to the handlers; see web_handlers.h for the list.
  */
-void registerWebHandlers(ChunkServer &webServer, db_mgr &db, int cacheKiB, bool fsMounted)
+void registerWebHandlers(AsyncWebServer &webServer, db_mgr &db, int cacheKiB, bool fsMounted)
 {
-  /* Keep what the handlers need (see the note at the variables above). */
-  server = &webServer;
+
+  // Runs for every request, including those that end in a redirect or a 404.
+  webServer.addMiddleware(new ActivityLedMiddleware());
+
+  /* Keep the database and status values handlers need. */
   database = &db;
   databaseCacheKiB = cacheKiB;
   filesystemMounted = fsMounted;
@@ -1057,17 +1060,8 @@ void registerWebHandlers(ChunkServer &webServer, db_mgr &db, int cacheKiB, bool 
     }
 
     LOG_PRINTF("A crash dump is waiting: task '%s' at 0x%08x. See docs/how-it-works.md, \"Reading a crash\"\n",
-                  crashTask, (unsigned)crashAddress);
+               crashTask, (unsigned)crashAddress);
   }
-
-  /*
-   * The web server only keeps the request headers it has been told to
-   * collect; all others are discarded while the request is read. Without
-   * this, server->header("If-None-Match") in sendPage() would always be
-   * empty and the pages would be sent in full every time.
-   */
-  static const char *HEADERS[] = {"If-None-Match"};
-  webServer.collectHeaders(HEADERS, 1);
 
   /*
    * The page. /query_db was the address of the separate results page in an

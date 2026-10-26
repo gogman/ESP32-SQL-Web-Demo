@@ -11,25 +11,22 @@
  *   network.cpp       - joining WiFi, the access point, mDNS
  *   db_mgr.cpp        - opening the database and running the paged query
  *   web_handlers.cpp  - every address the web server answers
- *   chunk_server.h    - a WebServer that sends chunked responses efficiently
+ *   ESPAsyncWebServer - the asynchronous HTTP server
  *   Definitions.h     - all tunable settings in one place
  */
 
 #include <Arduino.h>
 #include "LittleFS.h"
 #include "Definitions.h"
-#include "chunk_server.h"
 #include "db_mgr.h"
 #include "network.h"
 #include "settings.h"
 #include "web_handlers.h"
 
 /*
- * The web server. It is the synchronous Arduino WebServer (one request at a
- * time, served from loop()), extended by ChunkServer so that streamed
- * responses cost one network packet per chunk instead of three.
+ * The asynchronous web server. Requests are handled independently of loop().
  */
-static ChunkServer server(HTTP_PORT);
+static AsyncWebServer server(HTTP_PORT);
 
 /*
  * The database manager. One instance for the whole program: it owns the
@@ -54,10 +51,6 @@ static db_mgr dbMgr;
  */
 void setup(void)
 {
-  /* The LED shows request activity (see ActivityLed in web_handlers.cpp); start with it off. */
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, 0);
-
   /*
    * The serial port, in the Debug build only (see SERIAL_LOG in
    * Definitions.h). 115200 baud matches monitor_speed in platformio.ini. The
@@ -143,17 +136,12 @@ void setup(void)
 void loop(void)
 {
   /*
-   * Accept a waiting browser connection, if there is one, and run the
-   * matching handler to completion. Requests are therefore served strictly
-   * one after another.
-   */
-  server.handleClient();
-
-  /*
    * Housekeeping for the network: retries the WiFi network after a fallback,
    * and restarts the board after new settings were saved.
    */
   handleNetwork();
+  
+  serviceActivityLed();
 
   /*
    * Sleep for one millisecond. Without this the loop would spin as fast as
