@@ -9,7 +9,7 @@ It is a read-only demonstration for a trusted network: the database is never cha
 ## Hardware and tools
 
 - Freenove ESP32-WROVER (4 MB flash, 4 MB PSRAM)
-- PlatformIO, Arduino framework, the Sqlite3Esp32 library
+- PlatformIO, Arduino framework, ESPAsyncWebServer, AsyncTCP and the Sqlite3Esp32 library
 
 ## Getting started
 

@@ -20,6 +20,7 @@ If the board is ever asked to write data, or is exposed to people who are not tr
 |---|---|
 | Board | Freenove ESP32-WROVER, 4 MB flash, 4 MB PSRAM |
 | Framework | Arduino core 2.0.17 (PlatformIO package 4.20017), built with PlatformIO (platform 7.1.3), from the project's own packages folder |
+| Web server | ESPAsyncWebServer 3.6.0 with AsyncTCP 3.3.2 |
 | Database | SQLite through the Sqlite3Esp32 library 2.5.0 (SQLite 3.43.2) |
 | Data | One table, `gendered_names`, 25,192 rows, 835,584 bytes |
 | Filesystem | LittleFS, 2048 KB partition |
@@ -36,8 +37,7 @@ If the board is ever asked to write data, or is exposed to people who are not tr
 | `src/settings.cpp`, `include/settings.h` | The network settings: defaults, checks, and keeping them in NVS |
 | `src/network.cpp`, `include/network.h` | WiFi, the access point, the `.local` name, the restart after saving settings |
 | `src/db_mgr.cpp`, `include/db_mgr.h` | The database: opening it, producing pages of rows as JSON, counting rows |
-| `src/web_handlers.cpp`, `include/web_handlers.h` | Every address the web server answers |
-| `include/chunk_server.h` | A web server class that sends streamed responses efficiently |
+| `src/web_handlers.cpp`, `include/web_handlers.h` | Every address the ESPAsyncWebServer answers and its route registration |
 | `include/Definitions.h` | All settings |
 | `include/Secrets.h` | WiFi name and passwords; not kept in version control. `Secrets.example.h` is the template |
 | `web/index.html` | The application page, built into the firmware compressed |
@@ -87,7 +87,7 @@ Changing this table moves the partitions. Afterwards both the firmware and the f
 6. **Name on the network.** The board announces itself by mDNS under its host name in lower case, `esp32-sql.local` by default, and gives the router the same name when it asks for an address.
 7. **Web server.** The handlers are registered and the server starts listening on port 80.
 
-`loop()` then repeats three things: serve one waiting request, do network housekeeping, and sleep for a millisecond so the processor is not kept busy doing nothing.
+`loop()` handles network housekeeping and sleeps for a millisecond. ESPAsyncWebServer accepts and responds to HTTP connections independently of `loop()`.
 
 Network housekeeping (`handleNetwork()`) first carries out a restart that saving new settings asked for (1.5 s after the save, `RESTART_DELAY_MS`), and lets the captive DNS server answer, if it runs, at the chosen interval. Apart from that it has two jobs, depending on the mode:
 
@@ -320,9 +320,9 @@ Rows are written as JSON directly into a fixed 1400-byte buffer inside the datab
 
 ## Sending responses
 
-Results are sent with HTTP chunked encoding, because their length is not known in advance. The stock web server writes each chunk as three separate network packets (length, data, line break). `ChunkServer` in `include/chunk_server.h` assembles the three parts in one buffer and writes them once, so a chunk is one packet. A full 1400-byte chunk with its framing still fits in a single TCP packet.
+`/api/names` writes JSON through the database's fixed 1400-byte buffer into an `AsyncResponseStream`, then sends the response asynchronously. The page size is capped at 200 rows, keeping the assembled response bounded. Other endpoints use request-scoped AsyncWebServer responses; file and embedded-page responses are sent without copying their contents into a separate application buffer.
 
-The HTTP status and headers of `/api/names` are sent together with the first chunk, not before the query starts. That is what allows a query that fails immediately to be answered with a proper `500`.
+The HTTP status and headers of `/api/names` are sent after the query has produced its response. That allows a query that fails before producing output to be answered with a proper `500`.
 
 ## Caching
 
@@ -406,7 +406,7 @@ Two things to keep in mind when changing the markup:
 - **`setStatus(text)`** shows a message in the status line. It uses `textContent`, so the text is displayed literally and is never interpreted as HTML.
 - **`twoDigits(number)`** formats 7 as `07`.
 - **`formatUptime(seconds)`** writes seconds as days, hours, minutes and seconds, for example 90061 as `1d 1:01:01` and 3725 as `0d 1:02:05`.
-- **`startUptime(seconds)`** shows the uptime the board reported and from then on adds the time that has passed, once a second. The board is not asked again: its clock and the browser's run at the same speed, so counting on locally gives the same result without a request every second to a server that answers one request at a time. The time passed is measured with `performance.now()`, which is not affected when the computer's clock is set. A browser slows timers in a background tab, but each update is worked out afresh from the clock, so the display is right again as soon as the tab is shown.
+- **`startUptime(seconds)`** shows the uptime the board reported and from then on adds the time that has passed, once a second. The board is not asked again: its clock and the browser's run at the same speed, so counting on locally gives the same result without a request every second. The time passed is measured with `performance.now()`, which is not affected when the computer's clock is set. A browser slows timers in a background tab, but each update is worked out afresh from the clock, so the display is right again as soon as the tab is shown.
 - **`showProblem(text)`** shows or hides the problem line.
 - **`showLoading(on)`** shows or hides the loading overlay.
 - **`readAddress()`** turns the page's address into a search, or `null`. If only one of `from` and `to` is present, the other is taken as empty.
@@ -671,7 +671,7 @@ That is a gain of about 2.5% on rows, none on counting, for 122 KB more flash. I
 
 **Reliability**
 
-- The server answers one request at a time. A slow request delays everyone else. The largest single request is the first sorted page of a search that matches the whole table, about 3 s. The count for such a search, and a jump to its last page in name order, take about 0.7 s each.
+- HTTP connections are handled asynchronously, but SQLite queries and sorting still run synchronously in the request callback. A slow query can therefore delay other callback work. The largest single request is the first sorted page of a search that matches the whole table, about 3 s. The count for such a search, and a jump to its last page in name order, take about 0.7 s each.
 - Serial uploads are unreliable on this board. Since 15 October 2026 it does not enter download mode by itself: the reset line from the USB adapter works, but the boot line (GPIO0) is not pulled low, with both versions of the upload tool. Uploading then needs the BOOT button held until "Connecting..." appears. On 16 October, with a second board unplugged from the same USB hub, uploads worked unattended again. Earlier in development it sometimes behaved the same way, and at other times stayed in download mode and did not start.
 
 **The page**

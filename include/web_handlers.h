@@ -6,8 +6,8 @@
 #ifndef WEB_HANDLERS_H
 #define WEB_HANDLERS_H
 
-#include "chunk_server.h"
 #include "db_mgr.h"
+#include <ESPAsyncWebServer.h>
 
 /*
  * Registers every address the application answers on the given server:
@@ -29,12 +29,16 @@
  * handlers read the database file's size and date from it) and before
  * server.begin().
  *
- * server and db must outlive the server; the handlers keep pointers to them.
+ * server and db must outlive the registered handlers; the handlers keep a
+ * pointer to db.
  * cacheKiB is the database cache size chosen at startup; it is not used for
  * anything here except being reported by /api/status.
  * fsMounted says whether the filesystem could be mounted. When it could
  * not, the handlers leave the filesystem alone and /api/status reports it.
  */
-void registerWebHandlers(ChunkServer &server, db_mgr &db, int cacheKiB, bool fsMounted);
+void registerWebHandlers(AsyncWebServer &server, db_mgr &db, int cacheKiB, bool fsMounted);
+
+// Switches the request LED off once its blink time has passed. Call from loop().
+void serviceActivityLed();
 
 #endif

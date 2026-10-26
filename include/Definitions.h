@@ -76,7 +76,10 @@ static const char STATIC_DNS[] = "";
 /* ------------------------------------------------------------------ */
 
 /* The GPIO pin of the LED that lights up while a request is being answered. */
-static const int LED_PIN = 13;
+static const int REQUEST_LED_PIN = 2;
+
+// How long the LED stays lit after a request, in milliseconds.
+#define REQUEST_LED_BLINK_MS 50
 
 /* ------------------------------------------------------------------ */
 /* Storage                                                            */
