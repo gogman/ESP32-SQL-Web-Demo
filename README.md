@@ -23,3 +23,7 @@ It is a read-only demonstration for a trusted network: the database is never cha
 ## Documentation
 
 [docs/how-it-works.md](docs/how-it-works.md) describes how the program works, the web interfaces, building and testing, known issues and possible improvements.
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
